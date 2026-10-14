@@ -20,6 +20,7 @@ const DEFAULT_STATE = () => ({
     newPerDay: 20, focus: 25, brk: 5, blurtMins: 7, stopNewDays: 14,
     // Daily study budgets (minutes) on top of homework; restDay 0=Sun … 6=Sat
     schoolMins: 45, weekendMins: 90, holidayMins: 120, restDay: 5,
+    syncUrl: "", // Google Apps Script web app link for Classroom sync
   },
   // Enfield council dates for 2026–27 (Christmas & May half term are typical, unconfirmed): check Latymer's calendar
   holidays: [
@@ -29,7 +30,7 @@ const DEFAULT_STATE = () => ({
     ["2027-03-26", "2027-04-09", "Easter holidays"],
     ["2027-05-31", "2027-06-04", "May half term"],
   ],
-  plan: {}, dayType: {}, covered: {}, homework: [],
+  plan: {}, dayType: {}, covered: {}, homework: [], sync: { last: 0, status: "" },
   srs: {}, custom: [], suspended: {}, log: {},
   calib: { 1: { n: 0, ok: 0 }, 2: { n: 0, ok: 0 }, 3: { n: 0, ok: 0 } },
   rag: {}, blurts: [], customBlurts: [], practice: [], papers: [],
@@ -285,14 +286,46 @@ function importICS(files, done) {
     save(); done(added, skipped);
   });
 }
+// Classroom sync: pulls homework from your Apps Script link when the app opens (at most every 10 min)
+let syncing = false;
+function syncClassroom(force) {
+  const url = S.settings.syncUrl;
+  if (!url || syncing || (!force && Date.now() - S.sync.last < 10 * 60000)) return Promise.resolve(false);
+  syncing = true;
+  return fetch(url).then((r) => r.json()).then((data) => {
+    if (data.error) throw new Error(data.error);
+    let added = 0, ticked = 0;
+    (data.items || []).forEach((it) => {
+      const uid = "gc-" + it.id, h = S.homework.find((x) => x.uid === uid);
+      if (!h) {
+        if (it.done && it.due < todayKey()) return; // already handed in: nothing to plan
+        S.homework.push({ id: hash(uid), uid, title: it.title, s: guessSubject(it.course + " " + it.title), due: it.due, mins: 45, done: !!it.done, doneOn: it.done ? todayKey() : null, src: it.course, link: it.link, auto: true });
+        added++;
+      } else {
+        h.title = it.title; h.due = it.due; h.link = it.link; h.src = it.course;
+        if (it.done && !h.done) { h.done = true; h.doneOn = todayKey(); ticked++; }
+      }
+    });
+    S.sync = { last: Date.now(), status: `Synced ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}${added ? ` · ${added} new` : ""}${ticked ? ` · ${ticked} handed in` : ""}`, ok: true };
+    save(); return added + ticked > 0;
+  }).catch((e) => {
+    S.sync = { last: Date.now(), status: "Sync failed: " + (e.message || e) + ". Check the link in Settings.", ok: false };
+    save(); return true;
+  }).finally(() => { syncing = false; });
+}
+function afterSync(changed) { if (changed !== false && /^#?(home|planner)?(\/|$)/.test(location.hash)) render(); }
+
 function homeworkPanel() {
   const today = todayKey();
   const list = S.homework.filter((h) => !h.done).sort((a, b) => a.due.localeCompare(b.due));
   const doneCount = S.homework.filter((h) => h.done).length;
-  return `<h2>Homework</h2><div class="card">
+  const sync = S.settings.syncUrl
+    ? `<div class="row spread small" style="margin-bottom:.6rem"><span style="color:${S.sync.ok === false ? "var(--bad)" : "var(--muted)"}">🔄 Google Classroom: ${esc(S.sync.status || "not synced yet")}</span><button class="small" id="syncNow" style="padding:.2rem .6rem">Sync now</button></div>`
+    : `<p class="small muted" style="margin-top:0">🔄 <a href="#settings">Set up Google Classroom sync</a> to add homework automatically.</p>`;
+  return `<h2>Homework</h2><div class="card">${sync}
     ${list.length ? `<table><tr><th>Homework</th><th>Due</th><th>Do on</th><th>Min</th><th></th></tr>${list.map((h) => `<tr data-hwrow="${h.id}">
       <td><label style="display:flex;gap:.5rem;margin:0;color:var(--ink);font-size:.95rem"><input type="checkbox" data-hw="${h.id}" style="width:auto">
-        <span>${h.s ? `<span class="pill" style="background:${SUBJECTS[h.s].colour};color:#fff">${SUBJECTS[h.s].short}</span> ` : `<select data-hwf="s" style="width:auto;padding:.1rem;font-size:.8rem"><option value="">Subject?</option>${SUBJ_KEYS.map((s) => `<option value="${s}">${SUBJECTS[s].short}</option>`).join("")}</select> `}${esc(h.title)}${h.src ? `<span class="small muted"> · ${esc(h.src)}</span>` : ""}</span></label></td>
+        <span>${h.auto ? "🔄 " : ""}${h.s ? `<span class="pill" style="background:${SUBJECTS[h.s].colour};color:#fff">${SUBJECTS[h.s].short}</span> ` : `<select data-hwf="s" style="width:auto;padding:.1rem;font-size:.8rem"><option value="">Subject?</option>${SUBJ_KEYS.map((s) => `<option value="${s}">${SUBJECTS[s].short}</option>`).join("")}</select> `}${h.link ? `<a href="${esc(h.link)}" target="_blank" rel="noopener">${esc(h.title)}</a>` : esc(h.title)}${h.src ? `<span class="small muted"> · ${esc(h.src)}</span>` : ""}</span></label></td>
       <td class="small" style="${h.due < today ? "color:var(--bad);font-weight:600" : ""}">${parseKey(h.due).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}${h.due < today ? " (late)" : ""}</td>
       <td><input type="date" data-hwf="doOn" value="${hwDay(h)}" style="padding:.2rem;width:auto"></td>
       <td><input type="number" data-hwf="mins" value="${h.mins}" min="5" step="5" style="padding:.2rem;width:4.2rem"></td>
@@ -332,6 +365,8 @@ function wireHomework(el, redraw) {
     S.homework.push({ id: hash(title + due + Date.now()), title, s: $("#hwS").value || null, due, mins: +$("#hwM").value || 45, done: false });
     save(); redraw();
   };
+  const sn = $("#syncNow", el);
+  if (sn) sn.onclick = () => { sn.disabled = true; sn.textContent = "Syncing…"; syncClassroom(true).then(() => redraw()); };
   const ics = $("#hwIcs", el);
   if (ics) ics.onchange = () => importICS(ics.files, (a, sk) => { redraw(); const m = $("#hwMsg"); if (m) m.textContent = `Imported ${a} homework item(s)${sk ? `, skipped ${sk} (already added or more than a week old)` : ""}.`; });
 }
@@ -863,6 +898,20 @@ function settings(el) {
       <textarea id="hols">${esc((S.holidays || []).map((h) => h.join(" ")).join("\n"))}</textarea>
       <button id="saveHols" style="margin-top:.5rem">Save holidays</button> <span id="holMsg" class="small muted"></span>
     </div>
+    <div class="card" style="margin-top:1rem"><h2 style="margin-top:0">Google Classroom sync</h2>
+      <p class="small muted" style="margin-top:0">One-time setup, about 5 minutes. Afterwards, every time you open Astar it adds new Classroom homework to your planner and ticks off anything you've handed in. Keep your link private: anyone with it could see your homework titles and due dates.</p>
+      <ol class="small" style="line-height:1.8">
+        <li>Go to <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com</a>, signed in with your <b>school</b> Google account. A new project opens. Name it <b>Astar sync</b>.</li>
+        <li>Delete what's in the editor, then <button class="small" id="copyScript" style="padding:.1rem .5rem">Copy the script</button> and paste it in. Press ⌘S to save.</li>
+        <li>In the left sidebar click <b>Services +</b>, choose <b>Google Classroom API</b>, then click <b>Add</b>.</li>
+        <li>Pick <b>test</b> in the function menu at the top, then click <b>Run</b>. Allow the permissions it asks for. (If you get "Google hasn't verified this app", click Advanced → Go to Astar sync. It's your own script.) The log should list your homework.</li>
+        <li>Click <b>Deploy → New deployment</b> → ⚙︎ → <b>Web app</b>. Set <i>Execute as</i>: <b>Me</b> and <i>Who has access</i>: <b>Anyone</b>. Click Deploy and copy the <b>Web app URL</b>.</li>
+        <li>Paste the URL below and click <b>Save &amp; test</b>.</li>
+      </ol>
+      <div class="row"><input id="syncUrl" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(st.syncUrl)}" style="flex:1;min-width:220px"><button class="primary" id="syncSave">Save &amp; test</button></div>
+      <p id="syncMsg" class="small ${S.sync.ok === false ? "" : "muted"}" style="${S.sync.ok === false ? "color:var(--bad)" : ""}">${esc(S.sync.status)}</p>
+      <p class="small muted">If Run says Classroom or Apps Script is disabled, or "Anyone" isn't offered under <i>Who has access</i>, your school has blocked it. Use the calendar import or quick-add on the Planner page instead.</p>
+    </div>
     <div class="card" style="margin-top:1rem"><h2 style="margin-top:0">Study</h2>
       <label>New cards per day</label><input type="number" min="0" max="200" data-set="newPerDay" value="${st.newPerDay}">
       <label>Focus minutes</label><input type="number" min="5" max="90" data-set="focus" value="${st.focus}">
@@ -876,6 +925,17 @@ function settings(el) {
     </div>`;
   el.querySelectorAll("[data-exam]").forEach((i) => i.onchange = () => { st.exams[i.dataset.exam] = i.value; save(); });
   el.querySelectorAll("[data-set]").forEach((i) => i.onchange = () => { st[i.dataset.set] = Math.max(0, +i.value || 0); save(); });
+  $("#copyScript", el).onclick = (e) => {
+    navigator.clipboard.writeText(CLASSROOM_SCRIPT).then(() => { e.target.textContent = "Copied ✓"; }, () => alert("Couldn't copy. Open js/classroom-script.js in the Astar folder and copy the part between the backticks."));
+  };
+  $("#syncSave", el).onclick = () => {
+    const u = $("#syncUrl").value.trim();
+    if (u && !/^https:\/\/script\.google(usercontent)?\.com\//.test(u)) return ($("#syncMsg").textContent = "That doesn't look like an Apps Script web app link (it should start https://script.google.com/).");
+    st.syncUrl = u; S.sync = { last: 0, status: "" }; save();
+    if (!u) return ($("#syncMsg").textContent = "Sync turned off.");
+    $("#syncMsg").textContent = "Testing…";
+    syncClassroom(true).then(() => { const m = $("#syncMsg"); if (m) { m.textContent = S.sync.status; m.style.color = S.sync.ok ? "var(--good)" : "var(--bad)"; } });
+  };
   $("#saveHols", el).onclick = () => {
     const rows = $("#hols").value.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => l.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{4}-\d{2}-\d{2})\s*(.*)$/));
     if (rows.some((r) => !r)) return ($("#holMsg").textContent = "Each line needs: YYYY-MM-DD YYYY-MM-DD name");
@@ -930,5 +990,7 @@ function nudge() {
 }
 
 nudge(); setInterval(nudge, 5 * 60000);
+syncClassroom().then(afterSync);
+window.addEventListener("focus", () => syncClassroom().then(afterSync));
 drawTimer();
 render();

@@ -23,7 +23,8 @@ Open `index.html` in a browser. There is nothing to install. Progress is saved i
     - **Exam prep** (final 3 weeks, about a third more time): full past papers.
   - Tick tasks off, delete them, add your own, and mark any day as school, weekend, holiday or rest.
 - **Homework:**
-  - Add homework with a quick form, or import Google Classroom due dates. Export Google Calendar as `.ics` files and the app reads them; re-importing skips anything already added.
+  - **Automatic Google Classroom sync.** A small Google Apps Script (`js/classroom-script.js`; the setup steps are in Settings) runs under your school account. Each time Astar opens, it pulls in new assignments and ticks off work you've handed in.
+  - Or add homework with a quick form, or import Google Classroom due dates. Export Google Calendar as `.ics` files and the app reads them; re-importing skips anything already added.
   - Each piece lands in the planner the day before it's due (skipping rest days), and you can move it to another day.
   - On heavy homework nights, revision is cut back to flashcards only.
 - **Covered in class:** tick topics on the Topics page and new flashcards only come from what you've been taught.
