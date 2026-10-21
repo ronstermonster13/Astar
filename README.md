@@ -15,7 +15,8 @@ Open `index.html` in a browser. There is nothing to install. Progress is saved i
 
 ## Features and the research behind them
 
-- **Planner:** a realistic daily plan up to your Year 12 exams, which you can edit.
+- **Planner:** a month calendar showing homework on its due date (synced from Classroom), exams, holidays, rest days and planned revision time. Tap a day to see and edit its plan.
+  - A realistic daily plan runs up to your Year 12 exams.
   - Study time per day: 45 minutes on school days, 90 on weekends, 120 in holidays, plus a weekly rest day. Christmas Eve, Christmas Day, Boxing Day and New Year's Day are rest days.
   - Three phases:
     - **Build & consolidate:** blurts, making cards from class notes, essay plans.

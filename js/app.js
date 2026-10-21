@@ -292,8 +292,16 @@ function syncClassroom(force) {
   const url = S.settings.syncUrl;
   if (!url || syncing || (!force && Date.now() - S.sync.last < 10 * 60000)) return Promise.resolve(false);
   syncing = true;
-  return fetch(url).then((r) => r.json()).then((data) => {
-    if (data.error) throw new Error(data.error);
+  return fetch(url).catch(() => {
+    throw new Error("couldn't reach Google. Check you're online, and that the deployment's Who has access is set to Anyone");
+  }).then((r) => r.text()).then((text) => {
+    let data;
+    try { data = JSON.parse(text); } catch {
+      throw new Error(/<html|<!doctype/i.test(text)
+        ? "Google sent a sign-in page instead of your homework. In Apps Script go to Deploy → Manage deployments → ✏️ and set Who has access to Anyone"
+        : "the link didn't return homework data. Make sure you pasted the Web app URL (ending /exec)");
+    }
+    if (data.error) throw new Error("the script hit an error: " + data.error);
     let added = 0, ticked = 0;
     (data.items || []).forEach((it) => {
       const uid = "gc-" + it.id, h = S.homework.find((x) => x.uid === uid);
@@ -306,47 +314,45 @@ function syncClassroom(force) {
         if (it.done && !h.done) { h.done = true; h.doneOn = todayKey(); ticked++; }
       }
     });
-    S.sync = { last: Date.now(), status: `Synced ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}${added ? ` · ${added} new` : ""}${ticked ? ` · ${ticked} handed in` : ""}`, ok: true };
+    const noStatus = (data.warnings || []).filter((w) => /hand-in/.test(w)).length;
+    const unreadable = (data.warnings || []).filter((w) => /could not read/.test(w)).map((w) => w.split(":")[0]);
+    S.sync = { last: Date.now(), warnings: data.warnings || [], courses: data.courses || null, status: `Synced ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} · ${(data.items || []).length} assignment${(data.items || []).length === 1 ? "" : "s"} found${!(data.items || []).length ? " (see Settings → Google Classroom sync for why)" : ""}${unreadable.length ? ` · couldn't read ${unreadable.join(", ")}` : ""}${added ? ` · ${added} new` : ""}${ticked ? ` · ${ticked} handed in` : ""}${noStatus ? ` · tick off by hand for ${noStatus} class${noStatus > 1 ? "es" : ""} (school hides hand-in status)` : ""}`, ok: true };
     save(); return added + ticked > 0;
   }).catch((e) => {
-    S.sync = { last: Date.now(), status: "Sync failed: " + (e.message || e) + ". Check the link in Settings.", ok: false };
+    S.sync = { last: Date.now(), status: "Sync failed: " + (e.message || e) + ".", ok: false };
     save(); return true;
   }).finally(() => { syncing = false; });
 }
 function afterSync(changed) { if (changed !== false && /^#?(home|planner)?(\/|$)/.test(location.hash)) render(); }
 
-function homeworkPanel() {
+function hwTable(list) {
   const today = todayKey();
-  const list = S.homework.filter((h) => !h.done).sort((a, b) => a.due.localeCompare(b.due));
-  const doneCount = S.homework.filter((h) => h.done).length;
-  const sync = S.settings.syncUrl
-    ? `<div class="row spread small" style="margin-bottom:.6rem"><span style="color:${S.sync.ok === false ? "var(--bad)" : "var(--muted)"}">🔄 Google Classroom: ${esc(S.sync.status || "not synced yet")}</span><button class="small" id="syncNow" style="padding:.2rem .6rem">Sync now</button></div>`
-    : `<p class="small muted" style="margin-top:0">🔄 <a href="#settings">Set up Google Classroom sync</a> to add homework automatically.</p>`;
-  return `<h2>Homework</h2><div class="card">${sync}
-    ${list.length ? `<table><tr><th>Homework</th><th>Due</th><th>Do on</th><th>Min</th><th></th></tr>${list.map((h) => `<tr data-hwrow="${h.id}">
-      <td><label style="display:flex;gap:.5rem;margin:0;color:var(--ink);font-size:.95rem"><input type="checkbox" data-hw="${h.id}" style="width:auto">
+  if (!list.length) return `<p class="muted" style="margin:.3rem 0">No homework here. 🎉</p>`;
+  return `<table><tr><th>Homework</th><th>Due</th><th>Do on</th><th>Min</th><th></th></tr>${list.map((h) => `<tr data-hwrow="${h.id}" style="${h.done ? "opacity:.55" : ""}">
+      <td><label style="display:flex;gap:.5rem;margin:0;color:var(--ink);font-size:.95rem"><input type="checkbox" data-hw="${h.id}" style="width:auto" ${h.done ? "checked" : ""}>
         <span>${h.auto ? "🔄 " : ""}${h.s ? `<span class="pill" style="background:${SUBJECTS[h.s].colour};color:#fff">${SUBJECTS[h.s].short}</span> ` : `<select data-hwf="s" style="width:auto;padding:.1rem;font-size:.8rem"><option value="">Subject?</option>${SUBJ_KEYS.map((s) => `<option value="${s}">${SUBJECTS[s].short}</option>`).join("")}</select> `}${h.link ? `<a href="${esc(h.link)}" target="_blank" rel="noopener">${esc(h.title)}</a>` : esc(h.title)}${h.src ? `<span class="small muted"> · ${esc(h.src)}</span>` : ""}</span></label></td>
-      <td class="small" style="${h.due < today ? "color:var(--bad);font-weight:600" : ""}">${parseKey(h.due).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}${h.due < today ? " (late)" : ""}</td>
-      <td><input type="date" data-hwf="doOn" value="${hwDay(h)}" style="padding:.2rem;width:auto"></td>
+      <td class="small" style="${h.due < today && !h.done ? "color:var(--bad);font-weight:600" : ""}">${parseKey(h.due).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}${h.due < today && !h.done ? " (late)" : ""}</td>
+      <td><input type="date" data-hwf="doOn" value="${hwDay(h)}" style="padding:.2rem;width:auto" ${h.done ? "disabled" : ""}></td>
       <td><input type="number" data-hwf="mins" value="${h.mins}" min="5" step="5" style="padding:.2rem;width:4.2rem"></td>
-      <td><button class="small" data-hwdel="${h.id}" style="padding:.1rem .5rem" title="Delete">×</button></td></tr>`).join("")}</table>` : `<p class="muted" style="margin-top:0">No homework to do. 🎉</p>`}
-    ${doneCount ? `<p class="small muted">${doneCount} done.</p>` : ""}
-    <div class="row" style="margin-top:.8rem">
+      <td><button class="small" data-hwdel="${h.id}" style="padding:.1rem .5rem" title="Delete">×</button></td></tr>`).join("")}</table>`;
+}
+function addHomeworkPanel() {
+  return `<h2>Add homework</h2><div class="card">
+    <div class="row">
       <input id="hwT" placeholder="Homework, e.g. History essay on Witte" style="flex:3;min-width:200px">
       <select id="hwS" style="width:auto"><option value="">Subject</option>${SUBJ_KEYS.map((s) => `<option value="${s}">${SUBJECTS[s].short}</option>`).join("")}</select>
       <input id="hwD" type="date" style="width:auto" title="Due date">
       <input id="hwM" type="number" value="45" min="5" step="5" style="width:4.5rem" title="Minutes">
       <button class="primary" id="hwAdd">Add</button>
     </div>
-    <details style="margin-top:.8rem"><summary><b>Import from Google Classroom</b> (via Google Calendar)</summary>
+    <details style="margin-top:.8rem"><summary><b>Import from a Google Calendar export</b> (backup if sync isn't working)</summary>
       <ol class="small" style="line-height:1.8">
         <li>Classroom puts every assignment with a due date into Google Calendar, one calendar per class.</li>
         <li>On a computer, open <a href="https://calendar.google.com/calendar/r/settings/export" target="_blank" rel="noopener">Google Calendar → Settings → Import &amp; export → Export</a>, signed in with your school account.</li>
         <li>It downloads a .zip. Double-click it to unzip, and you get one <b>.ics</b> file per class.</li>
-        <li>Choose all the .ics files below. Classes are matched to subjects by name. Anything already imported is skipped, so you can re-import every week.</li>
+        <li>Choose all the .ics files below. Anything already imported is skipped.</li>
       </ol>
       <label class="btn" style="color:var(--ink);font-size:1rem">Choose .ics files<input type="file" id="hwIcs" accept=".ics,text/calendar" multiple hidden></label> <span id="hwMsg" class="small muted"></span>
-      <p class="small muted">If your school has blocked calendar export, use the quick-add form above instead. It takes about 10 seconds per piece of homework.</p>
     </details>
   </div>`;
 }
@@ -371,27 +377,66 @@ function wireHomework(el, redraw) {
   if (ics) ics.onchange = () => importICS(ics.files, (a, sk) => { redraw(); const m = $("#hwMsg"); if (m) m.textContent = `Imported ${a} homework item(s)${sk ? `, skipped ${sk} (already added or more than a week old)` : ""}.`; });
 }
 
-function planner(el, [start]) {
+const syncLine = () => S.settings.syncUrl
+  ? `<div class="row spread small card" style="padding:.5rem .8rem;margin-bottom:.8rem"><span style="color:${S.sync.ok === false ? "var(--bad)" : "var(--muted)"}">🔄 Google Classroom: ${esc(S.sync.status || "not synced yet")}</span><button class="small" id="syncNow" style="padding:.2rem .6rem">Sync now</button></div>`
+  : `<p class="small muted">🔄 <a href="#settings">Set up Google Classroom sync</a> to add homework automatically.</p>`;
+
+// Planner = month calendar. Click a day to see and edit that day's plan and homework underneath.
+let selDay = null;
+function planner(el, [a, b]) {
   const today = todayKey();
-  if (!start) { const d = parseKey(today); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); start = todayKey(d); }
-  const days = [...Array(7)].map((_, i) => addDays(start, i));
+  if (a === "cal") a = b; // old #planner/cal/YYYY-MM links
+  if (/^\d{4}-\d{2}-\d{2}$/.test(a || "")) { selDay = a; a = a.slice(0, 7); }
+  const month = /^\d{4}-\d{2}$/.test(a || "") ? a : (selDay || today).slice(0, 7);
+  if (!selDay || selDay.slice(0, 7) !== month) selDay = month === today.slice(0, 7) ? today : month + "-01";
+  const first = parseKey(month + "-01");
+  const gridStart = addDays(month + "-01", -((first.getDay() + 6) % 7));
+  const prev = new Date(first); prev.setMonth(prev.getMonth() - 1);
+  const next = new Date(first); next.setMonth(next.getMonth() + 1);
+  const ym = (d) => todayKey(d).slice(0, 7);
+  const exams = new Set(SUBJ_KEYS.map((s) => S.settings.exams[s]).filter(Boolean));
   const ex = examKey(), ph = phaseOn(today);
-  const weekMins = days.reduce((a, k) => a + getDay(k).reduce((x, t) => x + t.mins, 0), 0);
-  const weekDone = days.reduce((a, k) => a + getDay(k).filter((t) => t.done).length, 0), weekAll = days.reduce((a, k) => a + getDay(k).length, 0);
+  const cells = [...Array(42)].map((_, i) => {
+    const k = addDays(gridStart, i), inMonth = k.slice(0, 7) === month, type = dayType(k), hol = holidayOn(k);
+    const due = S.homework.filter((h) => h.due === k).sort((x, y) => x.done - y.done);
+    const todo = hwOn(k).filter((h) => !h.done && h.due !== k);
+    const plan = getDay(k, false).reduce((t, x) => t + x.mins, 0);
+    const cls = ["cal-cell", inMonth ? "" : "out", k === today ? "today" : "", k === selDay ? "sel" : "", type === "rest" ? "rest" : "", hol || type === "holiday" ? "hol" : ""].join(" ");
+    return `<div class="${cls}" data-sel="${k}" title="${esc(hol ? hol[2] : type)}">
+      <div class="cal-top"><span class="cal-num">${parseKey(k).getDate()}</span>${exams.has(k) ? `<span class="cal-exam">Exams</span>` : ""}</div>
+      ${due.map((h) => `<span class="cal-hw ${h.done ? "done" : h.due < today ? "late" : ""}" style="--c:${h.s ? SUBJECTS[h.s].colour : "#64748b"}" title="${esc((h.s ? SUBJECTS[h.s].short + ": " : "") + h.title)}${h.done ? " (done)" : ""}">${h.done ? "✓ " : ""}${esc(h.title)}</span>`).join("")}
+      ${todo.length ? `<span class="cal-do">📝 do ${todo.length}</span>` : ""}
+      ${plan && inMonth && k >= today ? `<span class="cal-plan">${type === "rest" ? "rest" : plan + "m"}</span>` : ""}
+    </div>`;
+  }).join("");
+  const monthHw = S.homework.filter((h) => h.due.slice(0, 7) === month).sort((x, y) => x.due.localeCompare(y.due) || x.done - y.done);
+  const selDue = S.homework.filter((h) => h.due === selDay);
   el.innerHTML = `<h1>Planner</h1>
-    <p class="muted">${ex ? `Year 12 exams: <b>${parseKey(ex).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}</b> (${Math.max(0, phaseOn(today).days)} days) · ` : ""}Phase: <b>${ph.name}</b></p>
-    <p class="small muted">Plans fit around school and homework: ${S.settings.schoolMins} min on school days, ${S.settings.weekendMins} at weekends, ${S.settings.holidayMins} in holidays, with ${DOW[S.settings.restDay]} as your rest day. Change these in <a href="#settings">Settings</a>. Tick tasks off, delete ones that don't fit, and add your own.</p>
-    <div class="row spread" style="margin:1rem 0">
-      <a class="btn" href="#planner/${addDays(start, -7)}">← Prev</a>
-      <span><b>Week of ${parseKey(start).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</b> · ${weekDone}/${weekAll} done · ${Math.round(weekMins / 60 * 10) / 10} h planned</span>
-      <span class="row"><a class="btn" href="#planner">This week</a><a class="btn" href="#planner/${addDays(start, 7)}">Next →</a></span>
+    <p class="muted small">${ex ? `Year 12 exams: <b>${parseKey(ex).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}</b> (${Math.max(0, ph.days)} days) · ` : ""}Phase: <b>${ph.name}</b> · <a href="#settings">study times &amp; holidays</a></p>
+    ${syncLine()}
+    <div class="row spread" style="margin-bottom:.6rem">
+      <a class="btn" href="#planner/${ym(prev)}">← ${prev.toLocaleDateString("en-GB", { month: "short" })}</a>
+      <b style="font-size:1.15rem">${first.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</b>
+      <span class="row"><a class="btn" href="#planner/${today}">Today</a><a class="btn" href="#planner/${ym(next)}">${next.toLocaleDateString("en-GB", { month: "short" })} →</a></span>
     </div>
-    ${homeworkPanel()}
-    <h2>Week</h2>
-    ${days.map((k) => dayCard(k, k === today)).join("")}`;
-  wireDays(el, () => planner(el, [start]));
-  wireHomework(el, () => planner(el, [start]));
+    <div class="cal">${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => `<div class="cal-head">${d}</div>`).join("")}${cells}</div>
+    <p class="small muted">Homework is shown on its <b>due</b> date (✓ done, red = late). "📝 do" is the day you're planned to do it. Shaded days are holidays and the minutes are planned revision. <b>Tap a day</b> to see and edit its plan below.</p>
+    <div id="dayPanel">
+      ${dayCard(selDay, selDay === today)}
+      ${selDue.length ? `<h2>Due ${selDay === today ? "today" : parseKey(selDay).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" })}</h2><div class="card">${hwTable(selDue)}</div>` : ""}
+    </div>
+    <h2>All homework in ${first.toLocaleDateString("en-GB", { month: "long" })} (${monthHw.filter((h) => !h.done).length} to do)</h2>
+    <div class="card">${hwTable(monthHw)}</div>
+    ${addHomeworkPanel()}`;
+  const redraw = () => planner(el, [selDay]);
+  el.querySelectorAll("[data-sel]").forEach((c) => c.onclick = () => {
+    selDay = c.dataset.sel;
+    if (selDay.slice(0, 7) !== month) location.hash = "planner/" + selDay; else { redraw(); $("#dayPanel").scrollIntoView({ behavior: "smooth", block: "start" }); }
+  });
+  wireDays(el, redraw);
+  wireHomework(el, redraw);
 }
+
 function dayCard(k, isToday) {
   const tasks = getDay(k), type = dayType(k), hol = holidayOn(k), hw = hwOn(k);
   const mins = tasks.reduce((a, t) => a + t.mins, 0), hwMins = hw.reduce((a, h) => a + h.mins, 0);
@@ -468,7 +513,7 @@ function home(el) {
       <div class="card"><div class="stat">${cal.sureAcc === null ? "–" : cal.sureAcc + "%"}</div><div class="muted">right when "sure"${cal.sureAcc !== null && cal.sureAcc < 80 ? ' · <span style="color:var(--bad)">overconfident</span>' : ""}</div></div>
     </div>
 
-    <h2>Today's plan <a class="small" href="#planner" style="font-weight:400">see the week →</a></h2>
+    <h2>Today's plan <a class="small" href="#planner" style="font-weight:400">open calendar →</a></h2>
     <p class="small muted" style="margin-top:0">${phaseOn(todayKey()).name} · Use the <b>⏱ Focus</b> timer for each block (${S.settings.focus} min on, ${S.settings.brk} off).${unrated ? ` · <a href="#topics">${unrated} topics</a> not rated or ticked as covered yet` : ""}</p>
     <div id="todayPlan">${dayCard(todayKey(), true)}</div>
 
@@ -903,13 +948,15 @@ function settings(el) {
       <ol class="small" style="line-height:1.8">
         <li>Go to <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com</a>, signed in with your <b>school</b> Google account. A new project opens. Name it <b>Astar sync</b>.</li>
         <li>Delete what's in the editor, then <button class="small" id="copyScript" style="padding:.1rem .5rem">Copy the script</button> and paste it in. Press ⌘S to save.</li>
-        <li>In the left sidebar click <b>Services +</b>, choose <b>Google Classroom API</b>, then click <b>Add</b>.</li>
-        <li>Pick <b>test</b> in the function menu at the top, then click <b>Run</b>. Allow the permissions it asks for. (If you get "Google hasn't verified this app", click Advanced → Go to Astar sync. It's your own script.) The log should list your homework.</li>
-        <li>Click <b>Deploy → New deployment</b> → ⚙︎ → <b>Web app</b>. Set <i>Execute as</i>: <b>Me</b> and <i>Who has access</i>: <b>Anyone</b>. Click Deploy and copy the <b>Web app URL</b>.</li>
+        <li>Click the ⚙︎ <b>Project Settings</b> cog on the left and tick <b>Show "appsscript.json" manifest file in editor</b>. Go back to the editor (&lt;&gt;), open <b>appsscript.json</b>, replace everything in it with <button class="small" id="copyManifest" style="padding:.1rem .5rem">Copy the settings file</button>, and save. This asks Google only for <i>student</i> permissions, which fixes "The caller does not have permission".</li>
+        <li>Open <b>Code.gs</b>, pick <b>test</b> in the function menu at the top and click <b>Run</b>. Allow the permissions it asks for. (If you get "Google hasn't verified this app", click Advanced → Go to Astar sync. It's your own script.) The log lists each class and how many assignments it found.</li>
+        <li>Deploy: <b>Deploy → New deployment</b> → ⚙︎ → <b>Web app</b>, with <i>Execute as</i>: <b>Me</b> and <i>Who has access</i>: <b>Anyone</b>. Copy the <b>Web app URL</b>. <i>Already deployed?</i> Use <b>Deploy → Manage deployments → ✏️ → Version: New version → Deploy</b> instead. Your link stays the same.</li>
         <li>Paste the URL below and click <b>Save &amp; test</b>.</li>
       </ol>
       <div class="row"><input id="syncUrl" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(st.syncUrl)}" style="flex:1;min-width:220px"><button class="primary" id="syncSave">Save &amp; test</button></div>
       <p id="syncMsg" class="small ${S.sync.ok === false ? "" : "muted"}" style="${S.sync.ok === false ? "color:var(--bad)" : ""}">${esc(S.sync.status)}</p>
+      ${S.sync.courses ? `<details ${S.sync.ok && !S.sync.courses.some((c) => c.upcoming) ? "open" : ""}><summary class="small"><b>Last sync details</b>: what your script could see</summary><table class="small">${S.sync.courses.map((c) => `<tr><td>${esc(c.name)}</td><td style="${c.error ? "color:var(--bad)" : ""}">${c.error ? "Blocked: " + esc(c.error) : `${c.assignments} assignments · ${c.upcoming} due recently or upcoming`}</td></tr>`).join("")}</table>
+        ${S.sync.courses.length && S.sync.courses.every((c) => c.error) ? `<p class="small" style="color:var(--bad)">Every class is blocked. Do step 3 (the settings file), then Run <b>test</b> again and allow the new permissions, then redeploy as a <b>New version</b>.</p>` : ""}</details>` : ""}
       <p class="small muted">If Run says Classroom or Apps Script is disabled, or "Anyone" isn't offered under <i>Who has access</i>, your school has blocked it. Use the calendar import or quick-add on the Planner page instead.</p>
     </div>
     <div class="card" style="margin-top:1rem"><h2 style="margin-top:0">Study</h2>
@@ -925,6 +972,9 @@ function settings(el) {
     </div>`;
   el.querySelectorAll("[data-exam]").forEach((i) => i.onchange = () => { st.exams[i.dataset.exam] = i.value; save(); });
   el.querySelectorAll("[data-set]").forEach((i) => i.onchange = () => { st[i.dataset.set] = Math.max(0, +i.value || 0); save(); });
+  $("#copyManifest", el).onclick = (e) => {
+    navigator.clipboard.writeText(CLASSROOM_MANIFEST).then(() => { e.target.textContent = "Copied ✓"; }, () => alert("Couldn't copy. Open js/classroom-script.js in the Astar folder and copy CLASSROOM_MANIFEST."));
+  };
   $("#copyScript", el).onclick = (e) => {
     navigator.clipboard.writeText(CLASSROOM_SCRIPT).then(() => { e.target.textContent = "Copied ✓"; }, () => alert("Couldn't copy. Open js/classroom-script.js in the Astar folder and copy the part between the backticks."));
   };

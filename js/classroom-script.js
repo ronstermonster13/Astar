@@ -3,12 +3,14 @@
 const CLASSROOM_SCRIPT = `/**
  * Astar ↔ Google Classroom sync.
  * Returns your Classroom assignments due from 2 weeks ago onwards, with whether you've handed them in.
- * Needs the "Google Classroom API" service (Services + → Google Classroom API → Add).
+ * Needs the "Google Classroom API" service and the appsscript.json from Astar's Settings,
+ * which asks only for student permissions (read your classes and your own work).
  */
 function doGet() {
   var out;
   try {
-    out = { updated: new Date().toISOString(), items: getHomework() };
+    var hw = getHomework();
+    out = { updated: new Date().toISOString(), items: hw.items, warnings: hw.warnings, courses: hw.courses };
   } catch (e) {
     out = { error: String(e && e.message || e) };
   }
@@ -19,19 +21,33 @@ function getHomework() {
   var tz = 'Europe/London';
   var since = Utilities.formatDate(new Date(Date.now() - 14 * 864e5), tz, 'yyyy-MM-dd');
   var courses = Classroom.Courses.list({ studentId: 'me', courseStates: ['ACTIVE'] }).courses || [];
-  var items = [];
+  var items = [], warnings = [], summary = [];
   courses.forEach(function (c) {
-    // Which pieces of work you've handed in
-    var done = {};
-    var token;
-    do {
-      var subs = Classroom.Courses.CourseWork.StudentSubmissions.list(c.id, '-', { userId: 'me', pageToken: token, pageSize: 100 });
-      (subs.studentSubmissions || []).forEach(function (s) {
-        done[s.courseWorkId] = s.state === 'TURNED_IN' || s.state === 'RETURNED';
-      });
-      token = subs.nextPageToken;
-    } while (token);
-    var work = Classroom.Courses.CourseWork.list(c.id, { orderBy: 'dueDate desc', pageSize: 60 }).courseWork || [];
+    var work, info = { name: c.name, assignments: null, upcoming: 0 };
+    summary.push(info);
+    try {
+      work = Classroom.Courses.CourseWork.list(c.id, { orderBy: 'dueDate desc', pageSize: 60 }).courseWork || [];
+      info.assignments = work.length;
+    } catch (e) {
+      info.error = shortError(e);
+      warnings.push(c.name + ': could not read assignments (' + info.error + ')');
+      return; // skip classes the school doesn't let us read
+    }
+    // Hand-in status. Some schools/classes block this, so it's optional.
+    var done = {}, statusKnown = true;
+    try {
+      var token;
+      do {
+        var subs = Classroom.Courses.CourseWork.StudentSubmissions.list(c.id, '-', { userId: 'me', pageToken: token, pageSize: 100 });
+        (subs.studentSubmissions || []).forEach(function (s) {
+          done[s.courseWorkId] = s.state === 'TURNED_IN' || s.state === 'RETURNED';
+        });
+        token = subs.nextPageToken;
+      } while (token);
+    } catch (e) {
+      statusKnown = false;
+      warnings.push(c.name + ': hand-in status not available (' + shortError(e) + ')');
+    }
     work.forEach(function (w) {
       if (!w.dueDate) return;
       var t = w.dueTime || {};
@@ -39,14 +55,45 @@ function getHomework() {
       var due = w.dueTime ? Utilities.formatDate(dueAt, tz, 'yyyy-MM-dd')
         : w.dueDate.year + '-' + ('0' + w.dueDate.month).slice(-2) + '-' + ('0' + w.dueDate.day).slice(-2);
       if (due < since) return;
-      items.push({ id: w.id, course: c.name, title: w.title, due: due, link: w.alternateLink, done: !!done[w.id] });
+      info.upcoming++;
+      items.push({ id: w.id, course: c.name, title: w.title, due: due, link: w.alternateLink, done: statusKnown ? !!done[w.id] : null });
     });
   });
-  return items;
+  return { items: items, warnings: warnings, courses: summary };
+}
+
+function shortError(e) {
+  var m = String(e && e.message || e);
+  return m.replace(/^.*failed with error: /, '').slice(0, 120);
 }
 
 /** Run this once from the editor to grant permission and check it works (see the log). */
 function test() {
-  Logger.log(JSON.stringify(getHomework(), null, 2));
+  var hw = getHomework();
+  Logger.log('Classes: ' + hw.courses.length);
+  hw.courses.forEach(function (c) {
+    Logger.log('- ' + c.name + ': ' + (c.error ? 'ERROR ' + c.error : c.assignments + ' assignments, ' + c.upcoming + ' due recently/upcoming'));
+  });
+  Logger.log('Found ' + hw.items.length + ' assignments to sync.');
+  hw.warnings.forEach(function (w) { Logger.log('Note: ' + w); });
+  Logger.log(JSON.stringify(hw.items, null, 2));
+}
+`;
+
+// appsscript.json: asks only for student permissions. The default auto-detected
+// permissions can include teacher-style coursework access, which Google refuses for students.
+const CLASSROOM_MANIFEST = `{
+  "timeZone": "Europe/London",
+  "dependencies": {
+    "enabledAdvancedServices": [
+      { "userSymbol": "Classroom", "version": "v1", "serviceId": "classroom" }
+    ]
+  },
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/classroom.courses.readonly",
+    "https://www.googleapis.com/auth/classroom.coursework.me.readonly"
+  ],
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8"
 }
 `;

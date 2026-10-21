@@ -79,6 +79,33 @@ th, td { text-align: left; padding: .45rem; border-bottom: 1px solid var(--line)
 .bar .track { flex: 1; height: 10px; background: var(--line); border-radius: 99px; overflow: hidden; }
 .bar .fill { height: 100%; }
 
+/* Calendar */
+.cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-head { text-align: center; font-size: .8rem; color: var(--muted); padding: .2rem 0; }
+.cal-cell { min-height: 6.2rem; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .3rem; display: flex; flex-direction: column; gap: 3px; color: var(--ink); text-decoration: none; overflow: hidden; }
+.cal-cell { cursor: pointer; }
+.cal-cell:hover { border-color: var(--accent); }
+.cal-cell.sel { box-shadow: 0 0 0 2px var(--accent) inset; background: var(--soft); }
+.cal-cell.out { opacity: .4; }
+.cal-cell.today { border: 2px solid var(--accent); }
+.cal-cell.hol { background: var(--soft); }
+.cal-cell.rest .cal-num { color: var(--muted); }
+.cal-top { display: flex; justify-content: space-between; align-items: center; }
+.cal-num { font-weight: 600; font-size: .85rem; }
+.cal-exam { background: var(--bad); color: #fff; font-size: .65rem; padding: 0 .35rem; border-radius: 99px; }
+.cal-hw { display: block; font-size: .72rem; line-height: 1.25; padding: .1rem .3rem; border-radius: 4px; border-left: 3px solid var(--c); background: color-mix(in srgb, var(--c) 14%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.cal-hw.done { opacity: .5; text-decoration: line-through; }
+.cal-hw.late { outline: 1px solid var(--bad); }
+.cal-do { font-size: .68rem; color: var(--muted); }
+.cal-plan { margin-top: auto; font-size: .65rem; color: var(--muted); text-align: right; }
+@media (max-width: 600px) {
+  .cal { gap: 2px; }
+  .cal-cell { min-height: 3.6rem; padding: .2rem; }
+  .cal-hw { font-size: 0; padding: 0; height: 6px; border-left-width: 0; background: var(--c); }
+  .cal-exam { font-size: 0; width: 8px; height: 8px; padding: 0; }
+  .cal-do, .cal-plan { display: none; }
+}
+
 @media (max-width: 600px) {
   .topbar { flex-wrap: wrap; }
   #nav { order: 3; flex-basis: 100%; }
