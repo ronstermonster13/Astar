@@ -30,7 +30,7 @@ const DEFAULT_STATE = () => ({
     ["2027-03-26", "2027-04-09", "Easter holidays"],
     ["2027-05-31", "2027-06-04", "May half term"],
   ],
-  plan: {}, dayType: {}, covered: {}, homework: [], sync: { last: 0, status: "" },
+  plan: {}, dayType: {}, covered: {}, homework: [], events: [], taught: {}, sync: { last: 0, status: "" },
   srs: {}, custom: [], suspended: {}, log: {},
   calib: { 1: { n: 0, ok: 0 }, 2: { n: 0, ok: 0 }, 3: { n: 0, ok: 0 } },
   rag: {}, blurts: [], customBlurts: [], practice: [], papers: [],
@@ -78,10 +78,24 @@ function newAllowed(s) {
   return !(d !== null && d > 0 && d <= S.settings.stopNewDays);
 }
 // Once you tick any "covered in class" topic for a subject, new cards only come from covered topics
-function hasCoverage(s) { return SUBJECTS[s].topics.some((t) => S.covered[s + "|" + t]); }
+function hasCoverage(s) { return SUBJECTS[s].topics.some((t) => S.covered[s + "|" + t] === true); }
 function isCovered(c) {
   if (!hasCoverage(c.s) || !SUBJECTS[c.s].topics.includes(c.t)) return true;
-  return !!S.covered[c.s + "|" + c.t];
+  return S.covered[c.s + "|" + c.t] === true;
+}
+// Which spec topics a piece of text (a Classroom post) is about
+function matchTopics(s, text) {
+  const t = " " + (text || "").toLowerCase() + " ";
+  return Object.entries(TOPIC_KEYWORDS[s] || {}).filter(([, kws]) => kws.some((kw) => kw.length <= 4 ? new RegExp(`\\b${kw}\\b`).test(t) : / i+$/.test(kw) ? new RegExp(`${kw}\\b`).test(t) : t.includes(kw))).map(([topic]) => topic);
+}
+// Topic to focus on for a subject: taught recently in class first, then weak (red/amber) covered topics
+function focusTopic(s, n, k) {
+  const recent = Object.entries(S.taught).filter(([key, v]) => key.startsWith(s + "|") && v.date >= addDays(k, -21) && S.covered[key] !== false)
+    .sort((a, b) => b[1].date.localeCompare(a[1].date)).map(([key, v]) => ({ t: key.slice(s.length + 1), why: v.title }));
+  if (recent.length) return recent[n % Math.min(recent.length, 3)];
+  const weak = SUBJECTS[s].topics.filter((t) => S.covered[s + "|" + t] === true && (S.rag[s + "|" + t] || 0) <= 2);
+  if (weak.length) return { t: weak[n % weak.length] };
+  return null;
 }
 function newLeftToday() { return Math.max(0, S.settings.newPerDay - ((S.log[todayKey()] || {}).new || 0)); }
 
@@ -183,7 +197,8 @@ function suggestDay(k) {
   const review = Math.min(20, budget);
   add("Flashcards: all due cards, mixed subjects", review, null, "#review/mixed");
   const hwLoad = S.homework.filter((h) => !h.done && hwDay(h) === k).reduce((a, h) => a + h.mins, 0);
-  let left = (hwLoad >= 90 ? review : Math.max(review, budget - Math.round(hwLoad / 10) * 5)) - review, slot = 0; // big homework night = just flashcards
+  const busy = hwLoad + evMins(k); // homework plus your own activities
+  let left = (busy >= 120 ? review : Math.max(review, budget - Math.round(busy / 10) * 5)) - review, slot = 0; // very busy day = just flashcards
   // Long weekend/holiday sessions in the run-up: a full timed paper
   const fullS = SUBJ_KEYS[n % 4], fullP = SUBJECTS[fullS].papers[n % 2];
   if ((ph.key === "practise" || ph.key === "exam") && type !== "school" && left >= fullP.mins) {
@@ -206,14 +221,23 @@ function suggestDay(k) {
     if (kind === "his-timeline" && s !== "his") kind = "cards";
     if (kind === "timed" && left < v.papers.find((x) => x.mins <= 60 && x.marks).mins) kind = "plan"; // don't squeeze a timed answer
     const mins = Math.min(25, left);
+    const f = focusTopic(s, n + slot, k), tn = f ? f.t.replace(/^(Phil|Ethics|DCT|Russia|Eng Rev|NEA): |^\d+\. /, "") : null;
+    const why = f && f.why ? ` · from class: "${f.why.slice(0, 40)}"` : "";
     if (kind === "blurt") {
-      const b = weakestBlurt(s);
-      b ? add(`Blurt: ${b.t} (${v.short})`, mins, s, "#blurt/" + encodeURIComponent(b.t))
-        : add(`Blurt this week's ${v.short} lesson topic from memory, then check your notes`, mins, s, "#blurt");
-    } else if (kind === "cards") add(`${v.short}: turn this week's class notes into 10 question cards`, mins, s, "#cards");
-    else if (kind === "plan") add(`${v.short}: 10-minute essay plan ×2 against the clock`, mins, s, "#practice/" + s);
+      const b = f ? BLURTS.concat(S.customBlurts).find((x) => x.s === s && (BLURT_TOPIC[x.t] === f.t || x.t === f.t)) : weakestBlurt(s);
+      if (b) add(`Blurt: ${b.t} (${v.short})${why}`, mins, s, "#blurt/" + encodeURIComponent(b.t));
+      else if (f) add(`${v.short}: blurt ${tn} from memory on paper, then check your notes${why}`, mins, s, "#blurt");
+      else { const w = weakestBlurt(s); w ? add(`Blurt: ${w.t} (${v.short})`, mins, s, "#blurt/" + encodeURIComponent(w.t)) : add(`Blurt this week's ${v.short} lesson topic from memory, then check your notes`, mins, s, "#blurt"); }
+    } else if (kind === "cards") {
+      const fresh = f && allCards().some((c) => c.s === s && c.t === f.t && isNew(c));
+      if (fresh) add(`${v.short}: learn the ${tn} flashcards${why}`, mins, s, "#review/topic:" + encodeURIComponent(s + "|" + f.t));
+      else add(`${v.short}: turn your ${f ? tn : "this week's"} class notes into 10 question cards${why}`, mins, s, "#cards");
+    } else if (kind === "plan") {
+      const q = f && v.questions.find((x) => matchTopics(s, x).includes(f.t));
+      add(q ? `${v.short}: 10-minute essay plan for "${q.slice(0, 70)}${q.length > 70 ? "…" : ""}"` : `${v.short}: 10-minute essay plan ×2 against the clock${f ? ` (${tn})` : ""}`, mins, s, "#practice/" + s);
+    }
     else if (kind === "timed") { const p = v.papers.find((x) => x.mins <= 60 && x.marks); add(`${v.short}: one timed answer (${p.name}, ${p.mins} min)`, p.mins, s, "#practice/" + s); }
-    else if (kind === "paperq") add(`${v.short}: past-paper questions from your weakest topic; log marks`, mins, s, "#papers");
+    else if (kind === "paperq") add(`${v.short}: past-paper questions on ${f ? tn : "your weakest topic"}; log marks`, mins, s, "#papers");
     else if (kind === "his-timeline") add("History: timeline round ×3 (Russia + English Revolution)", Math.min(15, left), s, "#timeline");
     left -= tasks[tasks.length - 1].mins; slot++;
   }
@@ -243,9 +267,16 @@ function hwDay(h) {
   if (h.doOn) return h.doOn < today && !h.done ? today : h.doOn;
   if (h.due <= today) return today;
   let k = addDays(h.due, -1);
-  while (k > today && dayType(k) === "rest") k = addDays(k, -1);
+  while (k > today && (dayType(k) === "rest" || evMins(k) >= 120)) k = addDays(k, -1); // skip rest days and busy days
   return k < today ? today : k;
 }
+// Your own commitments (clubs, sport, job…): weekly or one-off. Busy days get lighter revision, and homework avoids them.
+function eventsOn(k) {
+  const dow = parseKey(k).getDay(), term = !holidayOn(k);
+  return S.events.filter((e) => e.kind === "once" ? e.date === k : e.dows.includes(dow) && (term || !e.termOnly) && (!e.from || k >= e.from) && (!e.until || k <= e.until)).sort((a, b) => (a.start || "").localeCompare(b.start || ""));
+}
+const evMins = (k) => eventsOn(k).reduce((a, e) => a + (+e.mins || 0), 0);
+const endTime = (e) => { if (!e.start) return ""; const [h, m] = e.start.split(":").map(Number), t = h * 60 + m + (+e.mins || 0); return `${String(Math.floor(t / 60) % 24).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`; };
 const hwOn = (k) => S.homework.filter((h) => (h.done ? h.doneOn === k : hwDay(h) === k));
 function parseICS(text, fallbackName) {
   const lines = text.replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "").split(/\r?\n/);
@@ -314,9 +345,19 @@ function syncClassroom(force) {
         if (it.done && !h.done) { h.done = true; h.doneOn = todayKey(); ticked++; }
       }
     });
+    let newTopics = 0;
+    (data.taught || []).concat((data.items || []).map((it) => ({ course: it.course, title: it.title, text: "", topic: "", date: it.due }))).forEach((p) => {
+      const subj = guessSubject(p.course) || guessSubject(p.title);
+      if (!subj) return;
+      matchTopics(subj, [p.topic, p.title, p.text].join(" ")).forEach((t) => {
+        const key = subj + "|" + t, prev = S.taught[key];
+        if (!prev || p.date > prev.date) S.taught[key] = { date: p.date, title: p.title };
+        if (S.covered[key] === undefined) { S.covered[key] = true; newTopics++; }
+      });
+    });
     const noStatus = (data.warnings || []).filter((w) => /hand-in/.test(w)).length;
     const unreadable = (data.warnings || []).filter((w) => /could not read/.test(w)).map((w) => w.split(":")[0]);
-    S.sync = { last: Date.now(), warnings: data.warnings || [], courses: data.courses || null, status: `Synced ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} · ${(data.items || []).length} assignment${(data.items || []).length === 1 ? "" : "s"} found${!(data.items || []).length ? " (see Settings → Google Classroom sync for why)" : ""}${unreadable.length ? ` · couldn't read ${unreadable.join(", ")}` : ""}${added ? ` · ${added} new` : ""}${ticked ? ` · ${ticked} handed in` : ""}${noStatus ? ` · tick off by hand for ${noStatus} class${noStatus > 1 ? "es" : ""} (school hides hand-in status)` : ""}`, ok: true };
+    S.sync = { last: Date.now(), warnings: data.warnings || [], courses: data.courses || null, status: `Synced ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} · ${(data.items || []).length} assignment${(data.items || []).length === 1 ? "" : "s"} found${!(data.items || []).length ? " (see Settings → Google Classroom sync for why)" : ""}${unreadable.length ? ` · couldn't read ${unreadable.join(", ")}` : ""}${added ? ` · ${added} new` : ""}${newTopics ? ` · ${newTopics} topic${newTopics > 1 ? "s" : ""} marked as covered` : ""}${ticked ? ` · ${ticked} handed in` : ""}${noStatus ? ` · tick off by hand for ${noStatus} class${noStatus > 1 ? "es" : ""} (school hides hand-in status)` : ""}`, ok: true };
     save(); return added + ticked > 0;
   }).catch((e) => {
     S.sync = { last: Date.now(), status: "Sync failed: " + (e.message || e) + ".", ok: false };
@@ -400,13 +441,15 @@ function planner(el, [a, b]) {
     const k = addDays(gridStart, i), inMonth = k.slice(0, 7) === month, type = dayType(k), hol = holidayOn(k);
     const due = S.homework.filter((h) => h.due === k).sort((x, y) => x.done - y.done);
     const todo = hwOn(k).filter((h) => !h.done && h.due !== k);
-    const plan = getDay(k, false).reduce((t, x) => t + x.mins, 0);
+    const dayTasks = getDay(k, false), plan = dayTasks.reduce((t, x) => t + x.mins, 0), evs = eventsOn(k);
     const cls = ["cal-cell", inMonth ? "" : "out", k === today ? "today" : "", k === selDay ? "sel" : "", type === "rest" ? "rest" : "", hol || type === "holiday" ? "hol" : ""].join(" ");
     return `<div class="${cls}" data-sel="${k}" title="${esc(hol ? hol[2] : type)}">
       <div class="cal-top"><span class="cal-num">${parseKey(k).getDate()}</span>${exams.has(k) ? `<span class="cal-exam">Exams</span>` : ""}</div>
       ${due.map((h) => `<span class="cal-hw ${h.done ? "done" : h.due < today ? "late" : ""}" style="--c:${h.s ? SUBJECTS[h.s].colour : "#64748b"}" title="${esc((h.s ? SUBJECTS[h.s].short + ": " : "") + h.title)}${h.done ? " (done)" : ""}">${h.done ? "✓ " : ""}${esc(h.title)}</span>`).join("")}
-      ${todo.length ? `<span class="cal-do">📝 do ${todo.length}</span>` : ""}
-      ${plan && inMonth && k >= today ? `<span class="cal-plan">${type === "rest" ? "rest" : plan + "m"}</span>` : ""}
+      ${evs.map((e) => `<span class="cal-ev" title="${esc(e.title)}">⏰ ${e.start ? e.start + " " : ""}${esc(e.title)}</span>`).join("")}
+      ${todo.length ? `<span class="cal-do">📝 do ${todo.map((h) => esc(h.title)).join(", ")}</span>` : ""}
+      ${inMonth && (k >= today || S.plan[k]) ? dayTasks.filter((t) => !/^Flashcards: all due/.test(t.text)).map((t) => `<span class="cal-task ${t.done ? "done" : ""}" style="--c:${t.s ? SUBJECTS[t.s].colour : "#64748b"}" title="${esc(t.text)}">${esc(t.text.replace(/^(English|History|Biology|RS): /, ""))}</span>`).join("") : ""}
+      ${plan && inMonth && k >= today ? `<span class="cal-plan">${type === "rest" ? "rest" : plan + "m revision"}</span>` : ""}
     </div>`;
   }).join("");
   const monthHw = S.homework.filter((h) => h.due.slice(0, 7) === month).sort((x, y) => x.due.localeCompare(y.due) || x.done - y.done);
@@ -420,14 +463,15 @@ function planner(el, [a, b]) {
       <span class="row"><a class="btn" href="#planner/${today}">Today</a><a class="btn" href="#planner/${ym(next)}">${next.toLocaleDateString("en-GB", { month: "short" })} →</a></span>
     </div>
     <div class="cal">${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => `<div class="cal-head">${d}</div>`).join("")}${cells}</div>
-    <p class="small muted">Homework is shown on its <b>due</b> date (✓ done, red = late). "📝 do" is the day you're planned to do it. Shaded days are holidays and the minutes are planned revision. <b>Tap a day</b> to see and edit its plan below.</p>
+    <p class="small muted">Boxes are homework on its <b>due</b> date (✓ done, red = late). "📝 do" is when you're planned to do it, ⏰ are your activities, and the coloured lines are your revision tasks (every day also starts with flashcards). Shaded days are holidays. <b>Tap a day</b> to see, tick off and edit its plan below.</p>
     <div id="dayPanel">
       ${dayCard(selDay, selDay === today)}
       ${selDue.length ? `<h2>Due ${selDay === today ? "today" : parseKey(selDay).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" })}</h2><div class="card">${hwTable(selDue)}</div>` : ""}
     </div>
     <h2>All homework in ${first.toLocaleDateString("en-GB", { month: "long" })} (${monthHw.filter((h) => !h.done).length} to do)</h2>
     <div class="card">${hwTable(monthHw)}</div>
-    ${addHomeworkPanel()}`;
+    ${addHomeworkPanel()}
+    ${activitiesPanel()}`;
   const redraw = () => planner(el, [selDay]);
   el.querySelectorAll("[data-sel]").forEach((c) => c.onclick = () => {
     selDay = c.dataset.sel;
@@ -435,6 +479,40 @@ function planner(el, [a, b]) {
   });
   wireDays(el, redraw);
   wireHomework(el, redraw);
+  wireActivities(el, redraw);
+}
+
+function activitiesPanel() {
+  const days = [1, 2, 3, 4, 5, 6, 0];
+  const describe = (e) => e.kind === "once" ? parseKey(e.date).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }) : "Every " + e.dows.map((d) => DOW[d]).join(", ") + (e.termOnly ? " (term time)" : "");
+  return `<h2>My activities</h2><div class="card">
+    <p class="small muted" style="margin-top:0">Add things you do outside lessons: sport, music, clubs, a job, plans with friends. Busy days get less revision (2 hours or more of activities and homework = flashcards only), and homework is planned for a quieter day before it's due.</p>
+    ${S.events.length ? `<table>${S.events.map((e) => `<tr><td><b>${esc(e.title)}</b></td><td class="small">${describe(e)}</td><td class="small">${e.start ? `${e.start}–${endTime(e)}` : ""} · ${e.mins} min</td><td><button class="small" data-evdel="${e.id}" style="padding:.1rem .5rem" title="Delete">×</button></td></tr>`).join("")}</table>` : ""}
+    <div class="row" style="margin-top:.8rem">
+      <input id="evT" placeholder="e.g. Football training" style="flex:2;min-width:160px">
+      <select id="evK" style="width:auto"><option value="weekly">Every week</option><option value="once">One-off</option></select>
+      <input id="evStart" type="time" value="16:00" style="width:auto" title="Start time">
+      <input id="evM" type="number" value="90" min="10" step="5" style="width:5rem" title="Minutes (include travel)">
+    </div>
+    <div class="row small" id="evDays" style="margin-top:.5rem">${days.map((d) => `<label style="display:flex;gap:.25rem;align-items:center;margin:0;color:var(--ink)"><input type="checkbox" value="${d}" style="width:auto">${DOW[d]}</label>`).join("")}
+      <label style="display:flex;gap:.25rem;align-items:center;margin:0 0 0 .8rem;color:var(--ink)"><input type="checkbox" id="evTerm" checked style="width:auto">term time only</label></div>
+    <div class="row small" id="evDateRow" style="margin-top:.5rem;display:none"><span>Date</span><input id="evDate" type="date" value="${selDay || todayKey()}" style="width:auto"></div>
+    <button class="primary" id="evAdd" style="margin-top:.6rem">Add activity</button> <span class="small muted">Include travel time in the minutes.</span>
+  </div>`;
+}
+function wireActivities(el, redraw) {
+  const k = $("#evK", el); if (!k) return;
+  k.onchange = () => { const once = k.value === "once"; $("#evDays").style.display = once ? "none" : "flex"; $("#evDateRow").style.display = once ? "flex" : "none"; };
+  $("#evAdd", el).onclick = () => {
+    const title = $("#evT").value.trim(), kind = k.value;
+    const dows = [...el.querySelectorAll("#evDays input[value]:checked")].map((x) => +x.value);
+    if (!title) return alert("Give the activity a name.");
+    if (kind === "weekly" && !dows.length) return alert("Pick at least one day.");
+    if (kind === "once" && !$("#evDate").value) return alert("Pick a date.");
+    S.events.push({ id: hash(title + Date.now()), title, kind, dows, from: todayKey(), date: $("#evDate").value, start: $("#evStart").value, mins: +$("#evM").value || 60, termOnly: $("#evTerm").checked });
+    save(); redraw();
+  };
+  el.querySelectorAll("[data-evdel]").forEach((b) => b.onclick = () => { if (confirm("Delete this activity?")) { S.events = S.events.filter((e) => e.id !== b.dataset.evdel); save(); redraw(); } });
 }
 
 function dayCard(k, isToday) {
@@ -443,8 +521,9 @@ function dayCard(k, isToday) {
   const past = k < todayKey();
   return `<div class="card day" style="margin:.6rem 0;${isToday ? "border:2px solid var(--accent)" : ""}${past ? ";opacity:.75" : ""}" data-day="${k}">
     <div class="row spread"><b>${isToday ? "Today · " : ""}${parseKey(k).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" })}</b>
-      <span class="row small"><span class="muted">${mins} min revision${hwMins ? ` + ${hwMins} min homework` : ""}${hol ? " · " + esc(hol[2]) : ""}</span>
+      <span class="row small"><span class="muted">${mins} min revision${hwMins ? ` + ${hwMins} min homework` : ""}${evMins(k) ? ` + ${evMins(k)} min activities` : ""}${hol ? " · " + esc(hol[2]) : ""}</span>
       <select data-type style="width:auto;padding:.2rem">${["school", "weekend", "holiday", "rest"].map((t) => `<option ${t === type ? "selected" : ""}>${t}</option>`).join("")}</select></span></div>
+    ${eventsOn(k).map((e) => `<div class="small" style="margin:.3rem 0">⏰ <b>${esc(e.title)}</b> ${e.start ? `${e.start}–${endTime(e)}` : ""} <span class="muted">(${e.mins} min)</span></div>`).join("")}
     ${hw.length ? `<div class="checklist" style="border-bottom:1px dashed var(--line);padding-bottom:.3rem">${hw.map((h) => `<label><input type="checkbox" data-hwday="${h.id}" ${h.done ? "checked" : ""}><span style="${h.done ? "text-decoration:line-through;color:var(--muted)" : ""}">📝 <b>Homework:</b> ${h.s ? `<span class="pill" style="background:${SUBJECTS[h.s].colour};color:#fff">${SUBJECTS[h.s].short}</span> ` : ""}${esc(h.title)} <span class="small ${h.due < todayKey() && !h.done ? "" : "muted"}" style="${h.due < todayKey() && !h.done ? "color:var(--bad)" : ""}">due ${h.due === k ? "today" : parseKey(h.due).toLocaleDateString("en-GB", { weekday: "short", day: "numeric" })} · ${h.mins}m</span></span></label>`).join("")}</div>` : ""}
     <div class="checklist">${tasks.map((t) => `<label style="justify-content:space-between"><span style="display:flex;gap:.6rem"><input type="checkbox" data-t="${t.id}" ${t.done ? "checked" : ""}><span style="${t.done ? "text-decoration:line-through;color:var(--muted)" : ""}">${t.s ? `<span class="pill" style="background:${SUBJECTS[t.s].colour};color:#fff">${SUBJECTS[t.s].short}</span> ` : ""}${t.href ? `<a href="${t.href}">${esc(t.text)}</a>` : esc(t.text)} <span class="muted small">${t.mins}m</span></span></span><button class="small" data-x="${t.id}" title="Remove" style="padding:.1rem .5rem">×</button></label>`).join("") || `<p class="muted small">Nothing planned.</p>`}</div>
     <div class="row" style="margin-top:.5rem">
@@ -810,18 +889,18 @@ function addCustomCard(s, t, f, b) {
 const RAG = ["Not rated", "🔴 Red", "🟠 Amber", "🟢 Green"];
 function topics(el) {
   el.innerHTML = `<h1>Topic tracker</h1>
-    <p class="muted">Tick <b>Covered</b> once you've been taught a topic in class. As soon as you tick one for a subject, new flashcards for that subject only come from covered topics, so you aren't tested on things you haven't learned yet. Then rate each topic red, amber or green, honestly. A blurt or past question will show whether "green" really is green.</p>
+    <p class="muted">Topics are ticked automatically when Google Classroom shows you've been taught them (📚). Tick any others you've done in class, or untick ones that aren't right; Classroom won't re-tick them. As soon as you tick one for a subject, new flashcards for that subject only come from covered topics, so you aren't tested on things you haven't learned yet. Then rate each topic red, amber or green, honestly. A blurt or past question will show whether "green" really is green.</p>
     ${Object.entries(SUBJECTS).map(([s, v]) => {
       const counts = [0, 0, 0, 0]; v.topics.forEach((t) => counts[S.rag[s + "|" + t] || 0]++);
       return `<h2>${v.name} <span class="pill">${v.board}</span></h2>
       <div class="small muted">🔴 ${counts[1]} · 🟠 ${counts[2]} · 🟢 ${counts[3]} · unrated ${counts[0]}</div>
-      <div class="card" style="margin-top:.5rem">${v.topics.map((t) => { const r = S.rag[s + "|" + t] || 0; return `<div class="rag"><label style="display:flex;gap:.5rem;align-items:center;margin:0;color:var(--ink);font-size:1rem"><input type="checkbox" style="width:auto" data-cov="${esc(s + "|" + t)}" ${S.covered[s + "|" + t] ? "checked" : ""}>${esc(t)}</label><button class="rag-${r}" data-k="${esc(s + "|" + t)}">${RAG[r]}</button></div>`; }).join("")}</div>`;
+      <div class="card" style="margin-top:.5rem">${v.topics.map((t) => { const r = S.rag[s + "|" + t] || 0; return `<div class="rag"><label style="display:flex;gap:.5rem;align-items:center;margin:0;color:var(--ink);font-size:1rem"><input type="checkbox" style="width:auto" data-cov="${esc(s + "|" + t)}" ${S.covered[s + "|" + t] === true ? "checked" : ""}><span>${esc(t)}${S.taught[s + "|" + t] ? `<span class="small muted" style="display:block">📚 Classroom ${parseKey(S.taught[s + "|" + t].date).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}: ${esc(S.taught[s + "|" + t].title.slice(0, 60))}</span>` : ""}</span></label><button class="rag-${r}" data-k="${esc(s + "|" + t)}">${RAG[r]}</button></div>`; }).join("")}</div>`;
     }).join("")}`;
   el.querySelectorAll("[data-k]").forEach((b) => b.onclick = () => {
     const k = b.dataset.k, r = ((S.rag[k] || 0) % 3) + 1;
     S.rag[k] = r; save(); b.className = "rag-" + r; b.textContent = RAG[r];
   });
-  el.querySelectorAll("[data-cov]").forEach((c) => c.onchange = () => { if (c.checked) S.covered[c.dataset.cov] = true; else delete S.covered[c.dataset.cov]; save(); });
+  el.querySelectorAll("[data-cov]").forEach((c) => c.onchange = () => { S.covered[c.dataset.cov] = c.checked; save(); });
 }
 
 // ---------- Timeline (History) ----------

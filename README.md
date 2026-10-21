@@ -28,7 +28,8 @@ Open `index.html` in a browser. There is nothing to install. Progress is saved i
   - Or add homework with a quick form, or import Google Classroom due dates. Export Google Calendar as `.ics` files and the app reads them; re-importing skips anything already added.
   - Each piece lands in the planner the day before it's due (skipping rest days), and you can move it to another day.
   - On heavy homework nights, revision is cut back to flashcards only.
-- **Covered in class:** tick topics on the Topics page and new flashcards only come from what you've been taught.
+- **Covered in class:** topics are ticked automatically from what Google Classroom shows you've been taught (assignments, posted materials and topic names, matched to the spec by keyword). You can tick or untick them by hand on the Topics page. New flashcards only come from covered topics, and planner tasks focus on what you've been taught in the last 3 weeks.
+- **My activities:** add weekly or one-off commitments (sport, clubs, a job). They show on the calendar. Busy days get less revision, and homework is scheduled for a quieter day before it's due.
 - **Review:** spaced-repetition flashcards using SM-2.
   - You commit to an answer and rate your confidence before you see the answer.
   - Mixed mode interleaves topics.

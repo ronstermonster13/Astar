@@ -10,7 +10,7 @@ function doGet() {
   var out;
   try {
     var hw = getHomework();
-    out = { updated: new Date().toISOString(), items: hw.items, warnings: hw.warnings, courses: hw.courses };
+    out = { updated: new Date().toISOString(), items: hw.items, warnings: hw.warnings, courses: hw.courses, taught: hw.taught };
   } catch (e) {
     out = { error: String(e && e.message || e) };
   }
@@ -21,7 +21,8 @@ function getHomework() {
   var tz = 'Europe/London';
   var since = Utilities.formatDate(new Date(Date.now() - 14 * 864e5), tz, 'yyyy-MM-dd');
   var courses = Classroom.Courses.list({ studentId: 'me', courseStates: ['ACTIVE'] }).courses || [];
-  var items = [], warnings = [], summary = [];
+  var items = [], warnings = [], summary = [], taught = [];
+  var taughtSince = Utilities.formatDate(new Date(Date.now() - 120 * 864e5), tz, 'yyyy-MM-dd');
   courses.forEach(function (c) {
     var work, info = { name: c.name, assignments: null, upcoming: 0 };
     summary.push(info);
@@ -33,6 +34,20 @@ function getHomework() {
       warnings.push(c.name + ': could not read assignments (' + info.error + ')');
       return; // skip classes the school doesn't let us read
     }
+    // What you've been taught: assignment and material titles, descriptions and Classroom topic names (all optional)
+    var topicNames = {};
+    try {
+      (Classroom.Courses.Topics.list(c.id).topic || []).forEach(function (t) { topicNames[t.topicId] = t.name; });
+    } catch (e) { /* topics not available */ }
+    var addTaught = function (x, kind) {
+      var when = Utilities.formatDate(new Date(x.creationTime || x.updateTime), tz, 'yyyy-MM-dd');
+      if (when < taughtSince) return;
+      taught.push({ course: c.name, title: x.title || '', text: String(x.description || '').slice(0, 300), topic: topicNames[x.topicId] || '', date: when, kind: kind });
+    };
+    work.forEach(function (w) { addTaught(w, 'work'); });
+    try {
+      (Classroom.Courses.CourseWorkMaterials.list(c.id, { pageSize: 60 }).courseWorkMaterial || []).forEach(function (m) { addTaught(m, 'material'); });
+    } catch (e) { /* materials not available */ }
     // Hand-in status. Some schools/classes block this, so it's optional.
     var done = {}, statusKnown = true;
     try {
@@ -59,7 +74,7 @@ function getHomework() {
       items.push({ id: w.id, course: c.name, title: w.title, due: due, link: w.alternateLink, done: statusKnown ? !!done[w.id] : null });
     });
   });
-  return { items: items, warnings: warnings, courses: summary };
+  return { items: items, warnings: warnings, courses: summary, taught: taught.slice(0, 400) };
 }
 
 function shortError(e) {
@@ -74,7 +89,7 @@ function test() {
   hw.courses.forEach(function (c) {
     Logger.log('- ' + c.name + ': ' + (c.error ? 'ERROR ' + c.error : c.assignments + ' assignments, ' + c.upcoming + ' due recently/upcoming'));
   });
-  Logger.log('Found ' + hw.items.length + ' assignments to sync.');
+  Logger.log('Found ' + hw.items.length + ' assignments to sync, and ' + hw.taught.length + ' recent posts to work out what you have been taught.');
   hw.warnings.forEach(function (w) { Logger.log('Note: ' + w); });
   Logger.log(JSON.stringify(hw.items, null, 2));
 }
@@ -91,7 +106,9 @@ const CLASSROOM_MANIFEST = `{
   },
   "oauthScopes": [
     "https://www.googleapis.com/auth/classroom.courses.readonly",
-    "https://www.googleapis.com/auth/classroom.coursework.me.readonly"
+    "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
+    "https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly",
+    "https://www.googleapis.com/auth/classroom.topics.readonly"
   ],
   "exceptionLogging": "STACKDRIVER",
   "runtimeVersion": "V8"

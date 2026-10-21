@@ -97,13 +97,17 @@ th, td { text-align: left; padding: .45rem; border-bottom: 1px solid var(--line)
 .cal-hw.done { opacity: .5; text-decoration: line-through; }
 .cal-hw.late { outline: 1px solid var(--bad); }
 .cal-do { font-size: .68rem; color: var(--muted); }
+.cal-ev { font-size: .68rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-task { font-size: .66rem; line-height: 1.2; padding-left: .3rem; border-left: 2px solid var(--c); color: var(--ink); opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-task.done { opacity: .4; text-decoration: line-through; }
 .cal-plan { margin-top: auto; font-size: .65rem; color: var(--muted); text-align: right; }
 @media (max-width: 600px) {
   .cal { gap: 2px; }
   .cal-cell { min-height: 3.6rem; padding: .2rem; }
   .cal-hw { font-size: 0; padding: 0; height: 6px; border-left-width: 0; background: var(--c); }
   .cal-exam { font-size: 0; width: 8px; height: 8px; padding: 0; }
-  .cal-do, .cal-plan { display: none; }
+  .cal-do, .cal-plan, .cal-ev { display: none; }
+  .cal-task { font-size: 0; height: 3px; padding: 0; border-left: 0; background: var(--c); }
 }
 
 @media (max-width: 600px) {
