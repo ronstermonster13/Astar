@@ -6,9 +6,14 @@ const CLASSROOM_SCRIPT = `/**
  * Needs the "Google Classroom API" service and the appsscript.json from Astar's Settings,
  * which asks only for student permissions (read your classes and your own work).
  */
-function doGet() {
+function doGet(e) {
   var out;
   try {
+    if (e && e.parameter && e.parameter.slides) {
+      // Text of the Google Slides / Docs attached to your Classroom posts, so Claude can turn them into flashcards
+      out = { updated: new Date().toISOString(), files: getSlidesText() };
+      return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
+    }
     var hw = getHomework();
     out = { updated: new Date().toISOString(), items: hw.items, warnings: hw.warnings, courses: hw.courses, taught: hw.taught };
   } catch (e) {
@@ -82,6 +87,36 @@ function shortError(e) {
   return m.replace(/^.*failed with error: /, '').slice(0, 120);
 }
 
+/** Text from Google Slides and Docs attached to Classroom posts in the last 120 days (max 80 files). */
+function getSlidesText() {
+  var tz = 'Europe/London';
+  var since = Utilities.formatDate(new Date(Date.now() - 120 * 864e5), tz, 'yyyy-MM-dd');
+  var courses = Classroom.Courses.list({ studentId: 'me', courseStates: ['ACTIVE'] }).courses || [];
+  var seen = {}, files = [], started = Date.now();
+  var token = ScriptApp.getOAuthToken();
+  courses.forEach(function (c) {
+    var posts = [];
+    try { posts = posts.concat(Classroom.Courses.CourseWorkMaterials.list(c.id, { pageSize: 60 }).courseWorkMaterial || []); } catch (e) {}
+    try { posts = posts.concat(Classroom.Courses.CourseWork.list(c.id, { pageSize: 60 }).courseWork || []); } catch (e) {}
+    posts.forEach(function (p) {
+      var when = Utilities.formatDate(new Date(p.creationTime || p.updateTime), tz, 'yyyy-MM-dd');
+      if (when < since) return;
+      (p.materials || []).forEach(function (m) {
+        var f = m.driveFile && m.driveFile.driveFile;
+        if (!f || seen[f.id] || files.length >= 80 || Date.now() - started > 300000) return;
+        seen[f.id] = true;
+        try {
+          var res = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + f.id + '/export?mimeType=text/plain',
+            { headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true });
+          if (res.getResponseCode() !== 200) return; // not a Google Slides/Doc (e.g. a PDF), or no access
+          files.push({ course: c.name, post: p.title || '', date: when, file: f.title || '', text: res.getContentText().slice(0, 20000) });
+        } catch (e) { /* skip files we can't read */ }
+      });
+    });
+  });
+  return files;
+}
+
 /** Run this once from the editor to grant permission and check it works (see the log). */
 function test() {
   var hw = getHomework();
@@ -92,6 +127,13 @@ function test() {
   Logger.log('Found ' + hw.items.length + ' assignments to sync, and ' + hw.taught.length + ' recent posts to work out what you have been taught.');
   hw.warnings.forEach(function (w) { Logger.log('Note: ' + w); });
   Logger.log(JSON.stringify(hw.items, null, 2));
+}
+
+/** Run this once to allow reading your class slides, and check how many it can read. */
+function testSlides() {
+  var files = getSlidesText();
+  Logger.log('Read text from ' + files.length + ' Google Slides/Docs.');
+  files.slice(0, 10).forEach(function (f) { Logger.log('- ' + f.course + ': ' + f.file + ' (' + f.text.length + ' characters)'); });
 }
 `;
 
@@ -108,7 +150,9 @@ const CLASSROOM_MANIFEST = `{
     "https://www.googleapis.com/auth/classroom.courses.readonly",
     "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
     "https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly",
-    "https://www.googleapis.com/auth/classroom.topics.readonly"
+    "https://www.googleapis.com/auth/classroom.topics.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/script.external_request"
   ],
   "exceptionLogging": "STACKDRIVER",
   "runtimeVersion": "V8"

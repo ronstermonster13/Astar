@@ -59,7 +59,7 @@ function logToday(field, n = 1) { const k = todayKey(); S.log[k] = S.log[k] || {
 
 // ---------- Cards & scheduling (SM-2 with exam-aware interval cap) ----------
 function allCards() {
-  const built = CARDS.map(([s, t, f, b, sub]) => ({ id: "c" + hash(s + "|" + f), s, t, f, b, sub: sub || "General", custom: false }));
+  const built = CARDS.map(([s, t, f, b, sub, src]) => ({ id: "c" + hash(s + "|" + f), s, t, f, b, sub: sub || "General", src: src || "", custom: false }));
   return built.concat(S.custom.map((c) => ({ ...c, sub: c.sub || (c.id.startsWith("u") && /recall the key point/.test(c.f) ? "Missed in blurts" : "My cards"), custom: true }))).filter((c) => !S.suspended[c.id]);
 }
 const isNew = (c) => !S.srs[c.id];
@@ -673,7 +673,7 @@ function review(el, [scope]) {
             ${subs.map((sub) => {
               const cc = tc.filter((c) => c.sub === sub);
               return `<details class="tree sub"><summary><span class="tree-name">${esc(sub)}</span><span class="small muted">${countLabel(cardCounts(cc))}</span><a class="btn small" href="#review/sub:${encodeURIComponent([s, t, sub].join("|"))}">Study</a></summary>
-                <ul class="qlist">${cc.map((c) => `<li><details><summary>${statusDot(c)}${esc(c.f)}</summary><div class="small qa">${esc(c.b)}</div></details></li>`).join("")}</ul></details>`;
+                <ul class="qlist">${cc.map((c) => `<li><details><summary>${statusDot(c)}${c.src ? "📄 " : ""}${esc(c.f)}</summary><div class="small qa">${esc(c.b)}${c.src ? `<div class="muted" style="margin-top:.3rem">Source: ${esc(c.src)}</div>` : ""}</div></details></li>`).join("")}</ul></details>`;
             }).join("")}</details>`;
         }).join("")}`;
       }).join("")}`;
@@ -717,6 +717,7 @@ function runSession(el, queue, { label = "", practice = false } = {}) {
       <div class="row spread small muted"><span><span class="pill" style="background:${v.colour};color:#fff">${v.short}</span> ${esc(c.t)} › ${esc(c.sub)} ${fresh ? '<span class="pill">new</span>' : ""}${practice ? ' <span class="pill">practice</span>' : ""}</span><span>${streakRight >= 3 ? `🔥 ${streakRight} in a row · ` : ""}${queue.length} left</span></div>
       <div class="progress" style="margin:.5rem 0"><div style="width:${(done / (done + queue.length)) * 100}%"></div></div>
       <div class="card fcard fx-in" id="fcard">
+        ${c.src ? `<div class="small src">📄 ${esc(c.src)}</div>` : ""}
         <div class="front">${esc(c.f)}</div>
         <textarea id="attempt" placeholder="Type your answer. The app checks it against the key words in the answer."></textarea>
         <label>How confident are you?</label>
@@ -1101,6 +1102,15 @@ function settings(el) {
       <p id="syncMsg" class="small ${S.sync.ok === false ? "" : "muted"}" style="${S.sync.ok === false ? "color:var(--bad)" : ""}">${esc(S.sync.status)}</p>
       ${S.sync.courses ? `<details ${S.sync.ok && !S.sync.courses.some((c) => c.upcoming) ? "open" : ""}><summary class="small"><b>Last sync details</b>: what your script could see</summary><table class="small">${S.sync.courses.map((c) => `<tr><td>${esc(c.name)}</td><td style="${c.error ? "color:var(--bad)" : ""}">${c.error ? "Blocked: " + esc(c.error) : `${c.assignments} assignments · ${c.upcoming} due recently or upcoming`}</td></tr>`).join("")}</table>
         ${S.sync.courses.length && S.sync.courses.every((c) => c.error) ? `<p class="small" style="color:var(--bad)">Every class is blocked. Do step 3 (the settings file), then Run <b>test</b> again and allow the new permissions, then redeploy as a <b>New version</b>.</p>` : ""}</details>` : ""}
+      <details style="margin:.6rem 0"><summary><b>Export class slides for Claude</b> (to make flashcards from your lessons)</summary>
+        <ol class="small" style="line-height:1.8">
+          <li>Update the script and settings file in Apps Script (steps 2–3 above), save, then pick <b>testSlides</b> and click <b>Run</b>. Allow access to <b>Google Drive (read-only)</b>, which lets the script read the slides your teachers attach. The log says how many it could read.</li>
+          <li>Deploy a <b>New version</b> (Deploy → Manage deployments → ✏️).</li>
+          <li>Click the button below. It saves a file called <code>astar-slides-….json</code> to your Downloads folder. Nothing is uploaded anywhere.</li>
+          <li>Tell Claude "I've exported my slides". Claude reads the file on your Mac and makes flashcards only for what's on your spec.</li>
+        </ol>
+        <button id="exportSlides" ${st.syncUrl ? "" : "disabled"}>Export slides</button> <span id="slidesMsg" class="small muted">${st.syncUrl ? "This can take a minute or two." : "Set up sync first."}</span>
+      </details>
       <p class="small muted">If Run says Classroom or Apps Script is disabled, or "Anyone" isn't offered under <i>Who has access</i>, your school has blocked it. Use the calendar import or quick-add on the Planner page instead.</p>
     </div>
     <div class="card" style="margin-top:1rem"><h2 style="margin-top:0">Study</h2>
@@ -1116,6 +1126,19 @@ function settings(el) {
     </div>`;
   el.querySelectorAll("[data-exam]").forEach((i) => i.onchange = () => { st.exams[i.dataset.exam] = i.value; save(); });
   el.querySelectorAll("[data-set]").forEach((i) => i.onchange = () => { st[i.dataset.set] = Math.max(0, +i.value || 0); save(); });
+  $("#exportSlides", el).onclick = (e) => {
+    const b = e.target, msg = $("#slidesMsg");
+    b.disabled = true; msg.textContent = "Reading your class slides… (up to 5 minutes)";
+    fetch(st.syncUrl + (st.syncUrl.includes("?") ? "&" : "?") + "slides=1").then((r) => r.text()).then((t) => {
+      const data = JSON.parse(t);
+      if (data.error) throw new Error(data.error);
+      if (!data.files || !data.files.length) throw new Error("no slides could be read. Run testSlides in Apps Script and check the log");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }));
+      a.download = `astar-slides-${todayKey()}.json`; a.click();
+      msg.textContent = `Saved ${data.files.length} slide decks/docs to your Downloads. Now tell Claude.`; msg.style.color = "var(--good)";
+    }).catch((err) => { msg.textContent = "Export failed: " + (err.message || err) + ". If it mentions sign-in or HTML, deploy a New version first."; msg.style.color = "var(--bad)"; }).finally(() => { b.disabled = false; });
+  };
   $("#copyManifest", el).onclick = (e) => {
     navigator.clipboard.writeText(CLASSROOM_MANIFEST).then(() => { e.target.textContent = "Copied ✓"; }, () => alert("Couldn't copy. Open js/classroom-script.js in the Astar folder and copy CLASSROOM_MANIFEST."));
   };

@@ -163,3 +163,5 @@ button.suggest { animation: pulse 1.2s ease-in-out infinite; font-weight: 700; }
   .fx-in, .flip-in, .verdict, .ring, button.suggest, .fcard.fx-right, .fcard.fx-wrong, .fx-mark.show { animation: none !important; }
   .fx-mark.show { opacity: .9; }
 }
+
+.src { display: inline-block; background: var(--soft); border-radius: 99px; padding: .1rem .6rem; margin-bottom: .3rem; }
