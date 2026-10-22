@@ -30,6 +30,10 @@ Open `index.html` in a browser. There is nothing to install. Progress is saved i
   - On heavy homework nights, revision is cut back to flashcards only.
 - **Covered in class:** topics are ticked automatically from what Google Classroom shows you've been taught (assignments, posted materials and topic names, matched to the spec by keyword). You can tick or untick them by hand on the Topics page. New flashcards only come from covered topics, and planner tasks focus on what you've been taught in the last 3 weeks.
 - **My activities:** add weekly or one-off commitments (sport, clubs, a job). They show on the calendar. Busy days get less revision, and homework is scheduled for a quieter day before it's due.
+- **Flashcards:** organised as subject › topic › subtopic, with subtopics named after the official spec headings (checked against the AQA 7402, AQA 7042 and OCR H573 spec PDFs). For example: Biology › 3.1.4.2 Many proteins are enzymes; History › 1894–1917 · Opposition; RS › The falsification symposium; English › C2 Section A · Shakespeare: Act 3. Every question is listed under its subtopic and can be studied on its own.
+  - Your typed answer is checked against the key words in the model answer (looks right / partly / doesn't match). It's a hint; you have the final say.
+  - A green tick animation for right answers and a red shake for wrong ones, with a score ring at the end of each session (reduced if your device asks for less motion).
+  - Studying a subtopic with nothing due gives a practice round that doesn't change your review schedule.
 - **Review:** spaced-repetition flashcards using SM-2.
   - You commit to an answer and rate your confidence before you see the answer.
   - Mixed mode interleaves topics.

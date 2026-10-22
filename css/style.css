@@ -115,3 +115,51 @@ th, td { text-align: left; padding: .45rem; border-bottom: 1px solid var(--line)
   #nav { order: 3; flex-basis: 100%; }
   .big-timer { font-size: 2.6rem; }
 }
+
+/* Flashcard topic tree */
+details.tree { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin: .4rem 0; }
+details.tree.sub { margin: .3rem .6rem; background: var(--bg); }
+details.tree > summary { display: flex; align-items: center; gap: .6rem; padding: .55rem .8rem; cursor: pointer; list-style: none; }
+details.tree > summary::-webkit-details-marker { display: none; }
+details.tree > summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+details.tree[open] > summary::before { transform: rotate(90deg); }
+.tree-name { flex: 1; font-weight: 600; }
+details.tree.sub .tree-name { font-weight: 500; }
+details.tree .btn.small { padding: .2rem .7rem; font-size: .85rem; }
+.qlist { list-style: none; margin: 0; padding: .2rem .9rem .7rem; }
+.qlist li { border-top: 1px solid var(--line); padding: .35rem 0; }
+.qlist summary { cursor: pointer; font-size: .95rem; }
+.qa { padding: .4rem .6rem; margin-top: .3rem; background: var(--soft); border-radius: 6px; white-space: pre-wrap; }
+.dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; background: var(--muted); margin-right: .45rem; vertical-align: middle; }
+.dot.due { background: var(--accent); }
+.dot.ok { background: var(--good); }
+
+/* Right / wrong feedback */
+.fcard { position: relative; overflow: hidden; }
+.fx-in { animation: fxIn .25s ease-out; }
+@keyframes fxIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.flip-in { animation: flipIn .35s ease-out; transform-origin: top; }
+@keyframes flipIn { from { opacity: 0; transform: perspective(600px) rotateX(-70deg); } to { opacity: 1; transform: none; } }
+.verdict { display: inline-block; font-weight: 700; padding: .3rem .8rem; border-radius: 99px; margin-top: .6rem; animation: pop .35s ease-out; }
+.verdict.right { background: #dcfce7; color: #166534; }
+.verdict.partly { background: #fef3c7; color: #92400e; }
+.verdict.wrong { background: #fee2e2; color: #991b1b; }
+button.suggest { animation: pulse 1.2s ease-in-out infinite; font-weight: 700; }
+@keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 45%, transparent); } 50% { box-shadow: 0 0 0 6px transparent; } }
+.fcard.fx-right { animation: glowRight .65s ease-out; border-color: var(--good); }
+.fcard.fx-wrong { animation: shake .45s ease-in-out, glowWrong .8s ease-out; border-color: var(--bad); }
+@keyframes glowRight { 0% { box-shadow: 0 0 0 0 rgba(22,163,74,.6); } 100% { box-shadow: 0 0 0 18px rgba(22,163,74,0); } }
+@keyframes glowWrong { 0% { box-shadow: 0 0 0 0 rgba(220,38,38,.55); } 100% { box-shadow: 0 0 0 18px rgba(220,38,38,0); } }
+@keyframes shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-10px); } 40% { transform: translateX(9px); } 60% { transform: translateX(-6px); } 80% { transform: translateX(4px); } }
+.fx-mark { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 7rem; font-weight: 800; pointer-events: none; opacity: 0; }
+.fx-mark.show { animation: markPop .7s ease-out forwards; }
+.fx-mark.right { color: var(--good); background: radial-gradient(circle, rgba(22,163,74,.18), transparent 65%); }
+.fx-mark.wrong { color: var(--bad); background: radial-gradient(circle, rgba(220,38,38,.16), transparent 65%); }
+@keyframes markPop { 0% { opacity: 0; transform: scale(.3); } 35% { opacity: 1; transform: scale(1.15); } 60% { transform: scale(1); } 100% { opacity: .9; transform: scale(1); } }
+.ring { --p: 0; width: 8rem; height: 8rem; margin: 1rem auto; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(var(--good) calc(var(--p) * 1%), var(--line) 0); animation: pop .5s ease-out; }
+.ring span { width: 6.4rem; height: 6.4rem; border-radius: 50%; background: var(--panel); display: grid; place-items: center; font-size: 1.6rem; font-weight: 800; }
+@keyframes pop { 0% { transform: scale(.6); opacity: 0; } 70% { transform: scale(1.06); opacity: 1; } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .fx-in, .flip-in, .verdict, .ring, button.suggest, .fcard.fx-right, .fcard.fx-wrong, .fx-mark.show { animation: none !important; }
+  .fx-mark.show { opacity: .9; }
+}

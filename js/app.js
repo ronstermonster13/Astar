@@ -59,8 +59,8 @@ function logToday(field, n = 1) { const k = todayKey(); S.log[k] = S.log[k] || {
 
 // ---------- Cards & scheduling (SM-2 with exam-aware interval cap) ----------
 function allCards() {
-  const built = CARDS.map(([s, t, f, b]) => ({ id: "c" + hash(s + "|" + f), s, t, f, b, custom: false }));
-  return built.concat(S.custom.map((c) => ({ ...c, custom: true }))).filter((c) => !S.suspended[c.id]);
+  const built = CARDS.map(([s, t, f, b, sub]) => ({ id: "c" + hash(s + "|" + f), s, t, f, b, sub: sub || "General", custom: false }));
+  return built.concat(S.custom.map((c) => ({ ...c, sub: c.sub || (c.id.startsWith("u") && /recall the key point/.test(c.f) ? "Missed in blurts" : "My cards"), custom: true }))).filter((c) => !S.suspended[c.id]);
 }
 const isNew = (c) => !S.srs[c.id];
 const isDue = (c, now = Date.now()) => S.srs[c.id] && S.srs[c.id].due <= now;
@@ -627,31 +627,74 @@ function home(el) {
 }
 
 // ---------- Review ----------
-function review(el, [scope]) {
-  if (!scope) {
-    el.innerHTML = `<h1>Review</h1>
-      <p class="muted">Spaced retrieval practice. You answer before you see the answer. Mixed review shuffles topics together (interleaving).</p>
-      <div class="grid">
-        <a class="card" href="#review/mixed" style="text-decoration:none;color:inherit"><b>🔀 Mixed: all subjects</b><div class="muted small">${allCards().filter((c) => isDue(c)).length} due</div></a>
-        ${Object.entries(SUBJECTS).map(([s, v]) => `<a class="card subj" style="--c:${v.colour};text-decoration:none;color:inherit" href="#review/${s}"><b>${v.name}</b><div class="muted small">${allCards().filter((c) => c.s === s && isDue(c)).length} due</div></a>`).join("")}
-      </div>
-      <h2>Learn one topic (blocked)</h2>
-      <p class="muted small">Do a topic on its own the first time through, then switch to mixed review.</p>
-      <div class="row"><select id="topicPick" style="max-width:420px">${Object.entries(SUBJECTS).map(([s, v]) => `<optgroup label="${v.name}">${[...new Set(allCards().filter((c) => c.s === s).map((c) => c.t))].map((t) => `<option value="${s}|${esc(t)}">${esc(t)}</option>`).join("")}</optgroup>`).join("")}</select>
-      <button class="primary" id="goTopic">Start</button></div>`;
-    $("#goTopic", el).onclick = () => { location.hash = "review/topic:" + encodeURIComponent($("#topicPick").value); };
-    return;
-  }
-  let opts;
-  if (scope === "mixed") opts = { subjects: Object.keys(SUBJECTS), mode: "mixed" };
-  else if (scope.startsWith("topic:")) { const [s, t] = scope.slice(6).split("|"); opts = { subjects: [s], topic: t, mode: "blocked" }; }
-  else opts = { subjects: [scope], mode: "mixed" };
-  runSession(el, buildQueue(opts));
+// Rough automatic check of a typed answer: how many of the answer's key words did you include?
+const STOP = new Set("about above after again also although among another because been before being below between both but called cannot could does doing down during each either every from further have having here into itself just more most much must neither only other over same should since some such than that their them then there these they this those through under until upon very were what when where which while whom whose will with within without would your".split(" "));
+function keyWords(text) {
+  return [...new Set((text || "").toLowerCase().replace(/[‘’']/g, "").split(/[^a-z0-9à-ÿ⁺⁻₂]+/).filter((w) => (w.length >= 4 || /\d/.test(w)) && !STOP.has(w)).map((w) => w.slice(0, 6)))];
+}
+function checkAnswer(typed, answer, question = "") {
+  // Words already in the question (e.g. the visible half of a quote) and bracketed extras don't count
+  const given = new Set(keyWords(question));
+  let keys = keyWords(answer.replace(/\([^)]*\)/g, " ")).filter((k) => !given.has(k));
+  if (!keys.length) keys = keyWords(answer);
+  if (!typed.trim() || !keys.length) return null;
+  const mine = new Set(keyWords(typed)), hit = keys.filter((k) => mine.has(k));
+  const score = hit.length / keys.length;
+  return { score, verdict: score >= 0.5 ? "right" : score >= 0.2 ? "partly" : "wrong", hit: hit.length, total: keys.length };
 }
 
-function runSession(el, queue) {
-  const total = queue.length;
-  let done = 0, correct = 0, conf = 0;
+function cardCounts(list) {
+  return { n: list.length, due: list.filter((c) => isDue(c)).length, fresh: list.filter(isNew).length };
+}
+function countLabel({ n, due, fresh }) {
+  return `${n} card${n === 1 ? "" : "s"}${due ? ` · <b style="color:var(--accent)">${due} due</b>` : ""}${fresh ? ` · ${fresh} new` : ""}`;
+}
+function review(el, [scope]) {
+  if (!scope) {
+    const all = allCards();
+    const statusDot = (c) => !S.srs[c.id] ? `<span class="dot" title="New"></span>` : isDue(c) ? `<span class="dot due" title="Due"></span>` : `<span class="dot ok" title="Next review in ${Math.ceil((S.srs[c.id].due - Date.now()) / DAY)} days"></span>`;
+    el.innerHTML = `<h1>Flashcards</h1>
+      <p class="muted">Answer before you see the answer. Mixed review shuffles topics together, which helps you tell them apart. Or open a topic below and study one subtopic at a time.</p>
+      <div class="grid">
+        <a class="card" href="#review/mixed" style="text-decoration:none;color:inherit"><b>🔀 Mixed: all subjects</b><div class="muted small">${all.filter((c) => isDue(c)).length} due</div></a>
+        ${Object.entries(SUBJECTS).map(([s, v]) => `<a class="card subj" style="--c:${v.colour};text-decoration:none;color:inherit" href="#review/${s}"><b>${v.name}</b><div class="muted small">${all.filter((c) => c.s === s && isDue(c)).length} due · mixed</div></a>`).join("")}
+      </div>
+      <p class="small muted" style="margin-top:1rem"><span class="dot"></span> new <span class="dot due"></span> due <span class="dot ok"></span> learnt, next review scheduled. Tap a question to see its answer.</p>
+      ${Object.entries(SUBJECTS).map(([s, v]) => {
+        const sc = all.filter((c) => c.s === s);
+        const topicsInOrder = [...new Set(v.topics.filter((t) => sc.some((c) => c.t === t)).concat(sc.map((c) => c.t)))];
+        return `<h2 style="border-left:5px solid ${v.colour};padding-left:.5rem">${v.name} <span class="small muted" style="font-weight:400">${countLabel(cardCounts(sc))}</span></h2>
+        ${topicsInOrder.map((t) => {
+          const tc = sc.filter((c) => c.t === t);
+          // Spec order: numbered headings (3.4.1, RP2, C1, 1855–94…) sort naturally; others keep card order
+          const numbered = (x) => /^(\d|RP\d|C\d)/.test(x);
+          const subs = [...new Set(tc.map((c) => c.sub))].sort((a, b) => numbered(a) && numbered(b) ? a.localeCompare(b, "en", { numeric: true }) : 0);
+          return `<details class="tree"><summary><span class="tree-name">${esc(t)}</span><span class="small muted">${countLabel(cardCounts(tc))}</span><a class="btn small" href="#review/topic:${encodeURIComponent(s + "|" + t)}">Study</a></summary>
+            ${subs.map((sub) => {
+              const cc = tc.filter((c) => c.sub === sub);
+              return `<details class="tree sub"><summary><span class="tree-name">${esc(sub)}</span><span class="small muted">${countLabel(cardCounts(cc))}</span><a class="btn small" href="#review/sub:${encodeURIComponent([s, t, sub].join("|"))}">Study</a></summary>
+                <ul class="qlist">${cc.map((c) => `<li><details><summary>${statusDot(c)}${esc(c.f)}</summary><div class="small qa">${esc(c.b)}</div></details></li>`).join("")}</ul></details>`;
+            }).join("")}</details>`;
+        }).join("")}`;
+      }).join("")}`;
+    return;
+  }
+  let queue, label, practice = false;
+  if (scope === "mixed") { queue = buildQueue({ subjects: Object.keys(SUBJECTS), mode: "mixed" }); label = "Mixed review"; }
+  else if (scope.startsWith("topic:") || scope.startsWith("sub:")) {
+    // You picked this topic/subtopic: its due cards plus all its new ones, in order
+    const [s, t, sub] = scope.slice(scope.indexOf(":") + 1).split("|");
+    const set = allCards().filter((c) => c.s === s && c.t === t && (!sub || c.sub === sub));
+    queue = set.filter((c) => isDue(c)).concat(set.filter(isNew));
+    label = sub ? `${t} › ${sub}` : t;
+    if (!queue.length && set.length) { queue = shuffle(set); practice = true; }
+  } else { queue = buildQueue({ subjects: [scope], mode: "mixed" }); label = SUBJECTS[scope] ? SUBJECTS[scope].name : scope; }
+  runSession(el, queue, { label, practice });
+}
+
+function runSession(el, queue, { label = "", practice = false } = {}) {
+  const total = queue.length, missed = [];
+  let done = 0, correct = 0, conf = 0, streakRight = 0;
   if (!total) {
     el.innerHTML = `<div class="card flash"><h1>All caught up ✅</h1><p>Nothing is due here. Spacing works because you wait, so come back tomorrow. Meanwhile try a <a href="#blurt">blurt</a> or <a href="#practice">timed practice</a>.</p></div>`;
     return;
@@ -659,25 +702,33 @@ function runSession(el, queue) {
   const showCard = () => {
     if (!queue.length) {
       save();
-      el.innerHTML = `<div class="card flash"><h1>Session complete 🎉</h1><p>${done} reviews · ${Math.round((correct / Math.max(1, done)) * 100)}% recalled.</p><p class="muted">Sleep helps you keep what you've just learned. Next due cards are scheduled automatically.</p><a class="btn primary" href="#home">Back to today</a></div>`;
+      const pc = Math.round((correct / Math.max(1, done)) * 100);
+      el.innerHTML = `<div class="card flash fx-in"><h1>Session complete ${pc >= 80 ? "🎉" : pc >= 50 ? "👍" : "💪"}</h1>
+        <div class="ring" style="--p:${pc}"><span>${pc}%</span></div>
+        <p style="text-align:center">${done} answers · ${correct} right first time or after a retry</p>
+        ${missed.length ? `<h2>Worth another look</h2><ul class="qlist">${[...new Map(missed.map((c) => [c.id, c])).values()].map((c) => `<li><details><summary>${esc(c.f)}</summary><div class="small qa">${esc(c.b)}</div></details></li>`).join("")}</ul>` : ""}
+        <p class="muted small">${practice ? "Practice round: your review schedule wasn't changed." : "Sleep helps you keep what you've just learned. Your next reviews are scheduled automatically."}</p>
+        <div class="row"><a class="btn primary" href="#review">Back to flashcards</a><a class="btn" href="#home">Today</a></div></div>`;
       return;
     }
     const c = queue[0], v = SUBJECTS[c.s], fresh = isNew(c);
     conf = 0;
     el.innerHTML = `<div class="flash">
-      <div class="row spread small muted"><span><span class="pill" style="background:${v.colour};color:#fff">${v.short}</span> ${esc(c.t)} ${fresh ? '<span class="pill">new</span>' : ""}</span><span>${queue.length} left</span></div>
+      <div class="row spread small muted"><span><span class="pill" style="background:${v.colour};color:#fff">${v.short}</span> ${esc(c.t)} › ${esc(c.sub)} ${fresh ? '<span class="pill">new</span>' : ""}${practice ? ' <span class="pill">practice</span>' : ""}</span><span>${streakRight >= 3 ? `🔥 ${streakRight} in a row · ` : ""}${queue.length} left</span></div>
       <div class="progress" style="margin:.5rem 0"><div style="width:${(done / (done + queue.length)) * 100}%"></div></div>
-      <div class="card">
+      <div class="card fcard fx-in" id="fcard">
         <div class="front">${esc(c.f)}</div>
-        <textarea id="attempt" placeholder="Type or say your answer first (optional, but it makes you commit)"></textarea>
+        <textarea id="attempt" placeholder="Type your answer. The app checks it against the key words in the answer."></textarea>
         <label>How confident are you?</label>
         <div class="row" id="confRow"><button data-c="1">🤷 Guess</button><button data-c="2">🤔 Unsure</button><button data-c="3">💪 Sure</button></div>
         <div style="margin-top:1rem"><button class="primary" id="reveal" disabled>Show answer</button></div>
         <div id="answer"></div>
+        <div class="fx-mark" id="fxMark" aria-hidden="true"></div>
       </div>
       <p class="muted small" style="text-align:center">Keys: 1–3 confidence · space to reveal · 1–4 to rate</p>
     </div>`;
     el.querySelectorAll("#confRow button").forEach((b) => b.onclick = () => {
+      if ($("#answer").innerHTML) return; // confidence is locked once the answer is showing
       conf = +b.dataset.c;
       el.querySelectorAll("#confRow button").forEach((x) => x.classList.toggle("sel", x === b));
       $("#reveal").disabled = false;
@@ -687,12 +738,26 @@ function runSession(el, queue) {
   };
   const reveal = () => {
     if (!conf || $("#answer").innerHTML) return;
-    const c = queue[0];
+    const c = queue[0], typed = $("#attempt").value, chk = checkAnswer(typed, c.b, c.f);
     $("#reveal").remove();
+    $("#attempt").readOnly = true;
     const explain = Math.random() < 0.2 ? `<p class="small muted">💭 <b>Explain why:</b> before rating, say why this is true or link it to another topic (self-explanation).</p>` : "";
-    $("#answer").innerHTML = `<div class="back">${esc(c.b)}</div>${explain}
-      <div class="row"><button class="again" data-r="1">1 · Again</button><button class="hard" data-r="2">2 · Hard</button><button class="good" data-r="3">3 · Good</button><button class="easy" data-r="4">4 · Easy</button></div>`;
+    const badge = chk ? `<div class="verdict ${chk.verdict}">${chk.verdict === "right" ? "✓ Looks right" : chk.verdict === "partly" ? "≈ Partly there" : "✗ Doesn't match the answer"} <span class="small">· ${chk.hit}/${chk.total} key words</span></div>` : "";
+    $("#answer").innerHTML = `${badge}<div class="back flip-in">${esc(c.b)}</div>${explain}
+      <p class="small muted" style="margin:.2rem 0 .4rem">${chk ? "The check only compares key words, so you have the final say. " : ""}Were you right? Be honest. That decides when you'll see it again.</p>
+      <div class="row"><button class="again" data-r="1">✗ 1 · Wrong</button><button class="hard" data-r="2">2 · Hard</button><button class="good" data-r="3">✓ 3 · Right</button><button class="easy" data-r="4">4 · Easy</button></div>`;
+    if (chk) { const sug = { right: 3, partly: 2, wrong: 1 }[chk.verdict]; el.querySelector(`[data-r="${sug}"]`).classList.add("suggest"); }
     el.querySelectorAll("[data-r]").forEach((b) => b.onclick = () => rate(+b.dataset.r));
+  };
+  // Big tick or cross, then move on
+  const celebrate = (ok, then) => {
+    const card = $("#fcard"), mark = $("#fxMark");
+    el.querySelectorAll("[data-r]").forEach((b) => b.disabled = true);
+    card.classList.add(ok ? "fx-right" : "fx-wrong");
+    mark.textContent = ok ? "✓" : "✗";
+    mark.className = "fx-mark show " + (ok ? "right" : "wrong");
+    const reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setTimeout(then, reduce ? 350 : ok ? 650 : 800);
   };
   const rate = (rating) => {
     const c = queue.shift();
@@ -701,21 +766,21 @@ function runSession(el, queue) {
     if (conf < 3 && rating === 4) rating = 3;
     const ok = rating > 1;
     S.calib[conf].n++; if (ok) S.calib[conf].ok++;
-    schedule(c, rating);
-    if (wasNew && rating > 1) logToday("new");
-    logToday("reviews"); done++; if (ok) correct++;
+    if (!practice) { schedule(c, rating); if (wasNew && rating > 1) logToday("new"); }
+    logToday("reviews"); done++; if (ok) { correct++; streakRight++; } else { streakRight = 0; missed.push(c); }
     if (!ok) queue.splice(Math.min(queue.length, 3), 0, c); // see it again soon this session
     save();
-    if (!ok && conf === 3) {
-      // Hypercorrection: confident errors are the most fixable, so make the correction stick
-      el.querySelector(".card").insertAdjacentHTML("beforeend", `<div class="alert"><b>Confident but wrong. This one is worth fixing.</b><br>Read the answer again carefully. It will come back in a few cards.<div style="margin-top:.5rem"><button id="cont">Continue</button></div></div>`);
-      el.querySelectorAll("[data-r]").forEach((b) => b.disabled = true);
-      $("#cont").onclick = showCard; $("#cont").focus();
-    } else showCard();
+    celebrate(ok, () => {
+      if (!ok && conf === 3) {
+        // Hypercorrection: confident errors are the most fixable, so make the correction stick
+        $("#fcard").insertAdjacentHTML("beforeend", `<div class="alert"><b>Confident but wrong. This one is worth fixing.</b><br>Read the answer again carefully. It will come back in a few cards.<div style="margin-top:.5rem"><button id="cont">Continue</button></div></div>`);
+        $("#cont").onclick = showCard; $("#cont").focus();
+      } else showCard();
+    });
   };
   el.onkeydown = null;
   document.onkeydown = (e) => {
-    if (!location.hash.startsWith("#review/") || e.target.tagName === "TEXTAREA" && e.key !== "Escape") return;
+    if (!location.hash.startsWith("#review/") || e.target.tagName === "TEXTAREA" && !e.target.readOnly && e.key !== "Escape") return;
     const answerShown = $("#answer") && $("#answer").innerHTML;
     if (!answerShown && ["1", "2", "3"].includes(e.key)) { const b = el.querySelector(`#confRow [data-c="${e.key}"]`); b && b.click(); }
     else if (!answerShown && e.key === " ") { e.preventDefault(); $("#reveal") && $("#reveal").click(); }
@@ -879,10 +944,10 @@ function papers(el) {
   };
   $("#addq", el).onclick = () => { if (addCustomCard($("#qs").value, $("#qt").value, $("#qf").value, $("#qb").value)) { $("#qf").value = $("#qb").value = ""; $("#qmsg").textContent = "Added ✓"; } };
 }
-function addCustomCard(s, t, f, b) {
-  f = f.trim(); b = b.trim(); t = t.trim() || "My cards";
+function addCustomCard(s, t, f, b, sub) {
+  f = f.trim(); b = b.trim(); t = t.trim() || "My cards"; sub = (sub || "").trim() || "My cards";
   if (!f || !b) { alert("Fill in both the question and the answer."); return false; }
-  S.custom.push({ id: "u" + hash(s + "|" + f + Date.now()), s, t, f, b }); save(); return true;
+  S.custom.push({ id: "u" + hash(s + "|" + f + Date.now()), s, t, f, b, sub }); save(); return true;
 }
 
 // ---------- Topics (RAG) ----------
@@ -966,7 +1031,7 @@ function cardsView(el) {
     $("#list").innerHTML = `<p class="small muted">${list.length} cards</p><table><tr><th>Card</th><th>Status</th><th></th></tr>${list.slice(0, 300).map((c) => {
       const r = S.srs[c.id];
       const status = !r ? "new" : r.due <= Date.now() ? "due" : `in ${Math.ceil((r.due - Date.now()) / DAY)}d`;
-      return `<tr><td><span class="pill" style="background:${SUBJECTS[c.s].colour};color:#fff">${SUBJECTS[c.s].short}</span> <span class="small muted">${esc(c.t)}</span><div><b>${esc(c.f)}</b></div><div class="small">${esc(c.b)}</div></td><td class="small">${status}</td><td><button class="small" data-del="${c.id}" title="${c.custom ? "Delete" : "Hide"}">${c.custom ? "Delete" : "Hide"}</button></td></tr>`;
+      return `<tr><td><span class="pill" style="background:${SUBJECTS[c.s].colour};color:#fff">${SUBJECTS[c.s].short}</span> <span class="small muted">${esc(c.t)} › ${esc(c.sub)}</span><div><b>${esc(c.f)}</b></div><div class="small">${esc(c.b)}</div></td><td class="small">${status}</td><td><button class="small" data-del="${c.id}" title="${c.custom ? "Delete" : "Hide"}">${c.custom ? "Delete" : "Hide"}</button></td></tr>`;
     }).join("")}</table>`;
     $("#list").querySelectorAll("[data-del]").forEach((b) => b.onclick = () => {
       const id = b.dataset.del;
@@ -978,7 +1043,7 @@ function cardsView(el) {
   el.innerHTML = `<h1>Cards</h1>
     <div class="card"><h2 style="margin-top:0">Add a card</h2>
       <p class="small muted" style="margin-top:0">Good cards ask one specific question. Make quotation cards short (3–6 words) and tag them by theme in the topic.</p>
-      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))"><div><label>Subject</label><select id="as">${subjOptions()}</select></div><div><label>Topic</label><input id="at" list="topicList"></div></div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))"><div><label>Subject</label><select id="as">${subjOptions()}</select></div><div><label>Topic</label><input id="at" list="topicList"></div><div><label>Subtopic</label><input id="asub" placeholder="e.g. Enzymes"></div></div>
       <datalist id="topicList">${[...new Set(Object.values(SUBJECTS).flatMap((v) => v.topics))].map((t) => `<option value="${esc(t)}">`).join("")}</datalist>
       <label>Question (front)</label><input id="af"><label>Answer (back)</label><textarea id="ab" style="min-height:4rem"></textarea>
       <button class="primary" id="add" style="margin-top:.6rem">Add card</button> <span id="amsg" class="small muted"></span>
@@ -987,7 +1052,7 @@ function cardsView(el) {
     <div class="row"><select id="fs" style="max-width:220px"><option value="">All subjects</option>${subjOptions("")}</select><input id="fq" placeholder="Search…" style="max-width:300px"></div>
     <div id="list"></div>
     ${Object.keys(S.suspended).length ? `<p><button id="unhide">Restore ${Object.keys(S.suspended).length} hidden card(s)</button></p>` : ""}`;
-  $("#add", el).onclick = () => { if (addCustomCard($("#as").value, $("#at").value, $("#af").value, $("#ab").value)) { $("#af").value = $("#ab").value = ""; $("#amsg").textContent = "Added ✓"; draw(); } };
+  $("#add", el).onclick = () => { if (addCustomCard($("#as").value, $("#at").value, $("#af").value, $("#ab").value, $("#asub").value)) { $("#af").value = $("#ab").value = ""; $("#amsg").textContent = "Added ✓"; draw(); } };
   $("#fs", el).onchange = draw; $("#fq", el).oninput = draw;
   const u = $("#unhide", el); if (u) u.onclick = () => { S.suspended = {}; save(); render(); };
   draw();
