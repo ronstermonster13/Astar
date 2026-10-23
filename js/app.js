@@ -1104,7 +1104,7 @@ function settings(el) {
         ${S.sync.courses.length && S.sync.courses.every((c) => c.error) ? `<p class="small" style="color:var(--bad)">Every class is blocked. Do step 3 (the settings file), then Run <b>test</b> again and allow the new permissions, then redeploy as a <b>New version</b>.</p>` : ""}</details>` : ""}
       <details style="margin:.6rem 0"><summary><b>Export class slides for Claude</b> (to make flashcards from your lessons)</summary>
         <ol class="small" style="line-height:1.8">
-          <li>Update the script and settings file in Apps Script (steps 2–3 above), save, then pick <b>testSlides</b> and click <b>Run</b>. Allow access to <b>Google Drive (read-only)</b>, which lets the script read the slides your teachers attach. The log says how many it could read.</li>
+          <li>Update the script and settings file in Apps Script (steps 2–3 above), save, then pick <b>testSlides</b> and click <b>Run</b>. Allow the Google Drive access it asks for. It reads the slides your teachers attach, and converts PowerPoints, Word docs and PDFs using a temporary copy that is deleted immediately. The log says how many it could read.</li>
           <li>Deploy a <b>New version</b> (Deploy → Manage deployments → ✏️).</li>
           <li>Click the button below. It saves a file called <code>astar-slides-….json</code> to your Downloads folder. Nothing is uploaded anywhere.</li>
           <li>Tell Claude "I've exported my slides". Claude reads the file on your Mac and makes flashcards only for what's on your spec.</li>
@@ -1128,16 +1128,38 @@ function settings(el) {
   el.querySelectorAll("[data-set]").forEach((i) => i.onchange = () => { st[i.dataset.set] = Math.max(0, +i.value || 0); save(); });
   $("#exportSlides", el).onclick = (e) => {
     const b = e.target, msg = $("#slidesMsg");
-    b.disabled = true; msg.textContent = "Reading your class slides… (up to 5 minutes)";
-    fetch(st.syncUrl + (st.syncUrl.includes("?") ? "&" : "?") + "slides=1").then((r) => r.text()).then((t) => {
-      const data = JSON.parse(t);
-      if (data.error) throw new Error(data.error);
-      if (!data.files || !data.files.length) throw new Error("no slides could be read. Run testSlides in Apps Script and check the log");
+    b.disabled = true; msg.textContent = "Reading your class slides… (about 3 minutes per part)"; msg.style.color = "";
+    const base = st.syncUrl + (st.syncUrl.includes("?") ? "&" : "?") + "slides=1";
+    // The script stops before Google's 6-minute limit and says where to carry on (next), so keep asking until it's done
+    // A part that times out or drops is retried up to 3 times, so the export can run unattended
+    const getPart = (start, acc, tries = 0) => fetch(base + "&start=" + start).then((r) => r.text()).then((t) => {
+      const d = JSON.parse(t);
+      if (d.error) throw new Error(d.error);
+      return d;
+    }).catch((err) => {
+      if (tries >= 3) { if (acc) return { retried: { ...acc, partial: true } }; throw err; } // keep the parts already read
+      msg.textContent = `That part timed out. Trying again (${tries + 1} of 3)…`;
+      return new Promise((ok) => setTimeout(ok, 20000)).then(() => getPart(start, acc, tries + 1)).then((all) => ({ retried: all }));
+    }).then((d) => {
+      if (d.retried) return d.retried;
+      if (!d.files) return d;
+      const all = acc ? { ...d, files: acc.files.concat(d.files), skipped: acc.skipped.concat(d.skipped || []) } : d;
+      if (d.next == null || d.next <= start) return all;
+      msg.textContent = `Read ${all.files.length} files so far. Reading the next part… (about 3 minutes)`;
+      return getPart(d.next, all);
+    });
+    getPart(0).then((data) => {
+      if (!data.files) throw new Error("your web app is still running the old script. In Apps Script: paste the latest script and settings file, Run testSlides, then Deploy → Manage deployments → ✏️ → Version: New version → Deploy");
+      if (!data.files.length) {
+        const reasons = {}; (data.skipped || []).forEach((x) => { const r = (x.reason || "").replace(/\s*[(:].*$/, ""); reasons[r] = (reasons[r] || 0) + 1; });
+        const summary = Object.entries(reasons).map(([r, n]) => `${n} × ${r}`).join("; ");
+        throw new Error(data.skipped && data.skipped.length ? `found ${data.skipped.length} attached files but couldn't read any (${summary}). Google's reason for the first one: "${data.skipped[0].reason}". Send Claude a screenshot of this` : `no slides, docs or PDFs are attached to Classroom posts from the last 120 days in your ${data.courses} classes`);
+      }
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }));
       a.download = `astar-slides-${todayKey()}.json`; a.click();
-      msg.textContent = `Saved ${data.files.length} slide decks/docs to your Downloads. Now tell Claude.`; msg.style.color = "var(--good)";
-    }).catch((err) => { msg.textContent = "Export failed: " + (err.message || err) + ". If it mentions sign-in or HTML, deploy a New version first."; msg.style.color = "var(--bad)"; }).finally(() => { b.disabled = false; });
+      msg.textContent = `Saved ${data.files.length} files to your Downloads${data.partial ? " (stopped early: Google kept timing out, so export again later for the rest)" : ""}${data.skipped && data.skipped.length ? ` (${data.skipped.length} couldn't be read)` : ""}. Now tell Claude.`; msg.style.color = "var(--good)";
+    }).catch((err) => { msg.textContent = "Export failed: " + (/failed to fetch|load failed|networkerror/i.test(err.message || err) ? "Google cut the connection. Usually the script ran past Google's 6-minute limit, or the web app is running an old version. Check the homework sync still works, then deploy a New version and try again" : (err.message || err) + ". If it mentions sign-in or HTML, deploy a New version first") + "."; msg.style.color = "var(--bad)"; }).finally(() => { b.disabled = false; });
   };
   $("#copyManifest", el).onclick = (e) => {
     navigator.clipboard.writeText(CLASSROOM_MANIFEST).then(() => { e.target.textContent = "Copied ✓"; }, () => alert("Couldn't copy. Open js/classroom-script.js in the Astar folder and copy CLASSROOM_MANIFEST."));

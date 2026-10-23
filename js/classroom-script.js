@@ -11,7 +11,9 @@ function doGet(e) {
   try {
     if (e && e.parameter && e.parameter.slides) {
       // Text of the Google Slides / Docs attached to your Classroom posts, so Claude can turn them into flashcards
-      out = { updated: new Date().toISOString(), files: getSlidesText() };
+      // Big batches are read in parts: Astar calls again with start=next until next is null
+      var sl = getSlidesText(Number(e.parameter.start) || 0);
+      out = { updated: new Date().toISOString(), version: 2, files: sl.files, skipped: sl.skipped, courses: sl.courses, next: sl.next };
       return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
     }
     var hw = getHomework();
@@ -87,13 +89,51 @@ function shortError(e) {
   return m.replace(/^.*failed with error: /, '').slice(0, 120);
 }
 
-/** Text from Google Slides and Docs attached to Classroom posts in the last 120 days (max 80 files). */
-function getSlidesText() {
+/** Text from slides/docs/PDFs attached to Classroom posts in the last 120 days, up to 80 files or 2½ minutes per part (a single big PowerPoint can take a
+ * minute to convert, so this keeps well inside Google's 6-minute limit).
+ * Google Slides/Docs are exported directly. PowerPoint, Word and PDF files are converted via a
+ * temporary Google copy in your Drive, which is deleted straight after reading. */
+function getSlidesText(start) {
+  start = start || 0;
   var tz = 'Europe/London';
   var since = Utilities.formatDate(new Date(Date.now() - 120 * 864e5), tz, 'yyyy-MM-dd');
   var courses = Classroom.Courses.list({ studentId: 'me', courseStates: ['ACTIVE'] }).courses || [];
-  var seen = {}, files = [], started = Date.now();
+  var seen = {}, files = [], skipped = [], started = Date.now(), n = 0, next = null;
   var token = ScriptApp.getOAuthToken();
+  var CONVERT = {
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'application/vnd.google-apps.presentation',
+    'application/vnd.ms-powerpoint': 'application/vnd.google-apps.presentation',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'application/vnd.google-apps.document',
+    'application/msword': 'application/vnd.google-apps.document',
+    'application/pdf': 'application/vnd.google-apps.document'
+  };
+  // Uses the built-in Drive service (Services → Drive API), which also switches the Drive API on for this script
+  var errText = function (e) { return String(e && e.message || e).replace(/^.*failed with error: /, '').replace(/^GoogleJsonResponseException: /, '').slice(0, 140); };
+  var exportText = function (id) {
+    var r = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + id + '/export?mimeType=text/plain',
+      { headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true });
+    if (r.getResponseCode() !== 200) {
+      var msg = r.getContentText(); try { msg = JSON.parse(msg).error.message; } catch (e) {}
+      throw new Error('export ' + r.getResponseCode() + ': ' + String(msg).slice(0, 120));
+    }
+    return r.getContentText();
+  };
+  var readText = function (id) {
+    var meta;
+    try { meta = Drive.Files.get(id, { fields: 'mimeType,name', supportsAllDrives: true }); }
+    catch (e) { return { skip: 'no access: ' + errText(e) }; }
+    var mime = meta.mimeType;
+    if (mime === 'application/vnd.google-apps.presentation' || mime === 'application/vnd.google-apps.document') {
+      try { return { text: exportText(id) }; } catch (e) { return { skip: errText(e) }; }
+    }
+    if (!CONVERT[mime]) return { skip: 'not a slide/doc/PDF: ' + mime };
+    var copy;
+    try { copy = Drive.Files.copy({ name: 'Astar temp copy', mimeType: CONVERT[mime] }, id, { supportsAllDrives: true }); }
+    catch (e) { return { skip: 'could not convert ' + mime.split('.').pop() + ': ' + errText(e) }; }
+    try { return { text: exportText(copy.id) }; }
+    catch (e) { return { skip: 'converted copy unreadable: ' + errText(e) }; }
+    finally { try { Drive.Files.remove(copy.id); } catch (e) {} } // delete the temporary copy
+  };
   courses.forEach(function (c) {
     var posts = [];
     try { posts = posts.concat(Classroom.Courses.CourseWorkMaterials.list(c.id, { pageSize: 60 }).courseWorkMaterial || []); } catch (e) {}
@@ -102,19 +142,26 @@ function getSlidesText() {
       var when = Utilities.formatDate(new Date(p.creationTime || p.updateTime), tz, 'yyyy-MM-dd');
       if (when < since) return;
       (p.materials || []).forEach(function (m) {
-        var f = m.driveFile && m.driveFile.driveFile;
-        if (!f || seen[f.id] || files.length >= 80 || Date.now() - started > 300000) return;
-        seen[f.id] = true;
+        var id = null, title = '';
+        if (m.driveFile && m.driveFile.driveFile) { id = m.driveFile.driveFile.id; title = m.driveFile.driveFile.title || ''; }
+        else if (m.link && m.link.url) {
+          var mm = m.link.url.match(new RegExp('docs[.]google[.]com/(presentation|document)/d/([A-Za-z0-9_-]+)'));
+          if (mm) { id = mm[2]; title = m.link.title || m.link.url; }
+        }
+        if (!id || seen[id]) return;
+        seen[id] = true;
+        n++;
+        if (n <= start || next !== null) return; // read in an earlier part, or left for the next one
+        if (files.length >= 80 || Date.now() - started > 150000) { next = n - 1; return; }
         try {
-          var res = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + f.id + '/export?mimeType=text/plain',
-            { headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true });
-          if (res.getResponseCode() !== 200) return; // not a Google Slides/Doc (e.g. a PDF), or no access
-          files.push({ course: c.name, post: p.title || '', date: when, file: f.title || '', text: res.getContentText().slice(0, 20000) });
-        } catch (e) { /* skip files we can't read */ }
+          var res = readText(id);
+          if (res.text) files.push({ course: c.name, post: p.title || '', date: when, file: title, text: res.text.slice(0, 20000) });
+          else skipped.push({ course: c.name, file: title, reason: res.skip });
+        } catch (e) { skipped.push({ course: c.name, file: title, reason: String(e.message || e).slice(0, 100) }); }
       });
     });
   });
-  return files;
+  return { files: files, skipped: skipped, courses: courses.length, next: next };
 }
 
 /** Run this once from the editor to grant permission and check it works (see the log). */
@@ -131,9 +178,10 @@ function test() {
 
 /** Run this once to allow reading your class slides, and check how many it can read. */
 function testSlides() {
-  var files = getSlidesText();
-  Logger.log('Read text from ' + files.length + ' Google Slides/Docs.');
-  files.slice(0, 10).forEach(function (f) { Logger.log('- ' + f.course + ': ' + f.file + ' (' + f.text.length + ' characters)'); });
+  var r = getSlidesText();
+  Logger.log('Classes: ' + r.courses + '. Read text from ' + r.files.length + ' files; skipped ' + r.skipped.length + '.' + (r.next !== null ? ' More files left: Astar reads them in further parts.' : ''));
+  r.files.slice(0, 10).forEach(function (f) { Logger.log('OK ' + f.course + ': ' + f.file + ' (' + f.text.length + ' characters)'); });
+  r.skipped.slice(0, 15).forEach(function (f) { Logger.log('SKIPPED ' + f.course + ': ' + f.file + ' (' + f.reason + ')'); });
 }
 `;
 
@@ -143,7 +191,8 @@ const CLASSROOM_MANIFEST = `{
   "timeZone": "Europe/London",
   "dependencies": {
     "enabledAdvancedServices": [
-      { "userSymbol": "Classroom", "version": "v1", "serviceId": "classroom" }
+      { "userSymbol": "Classroom", "version": "v1", "serviceId": "classroom" },
+      { "userSymbol": "Drive", "version": "v3", "serviceId": "drive" }
     ]
   },
   "oauthScopes": [
@@ -152,6 +201,7 @@ const CLASSROOM_MANIFEST = `{
     "https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly",
     "https://www.googleapis.com/auth/classroom.topics.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/script.external_request"
   ],
   "exceptionLogging": "STACKDRIVER",
