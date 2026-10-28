@@ -37,6 +37,7 @@ Open `index.html` in a browser. There is nothing to install. Progress is saved i
   - Your typed answer is checked against the key words in the model answer (looks right / partly / doesn't match). It's a hint; you have the final say.
   - A green tick animation for right answers and a red shake for wrong ones, with a score ring at the end of each session (reduced if your device asks for less motion).
   - Studying a subtopic with nothing due gives a practice round that doesn't change your review schedule.
+- **Subjects you might switch to 🔭:** in Settings, tick Business (AQA 7138), PE (AQA 7582) or Psychology (AQA 7182, board unconfirmed) to add their flashcards, topics, blurts and timed practice. Business and PE match the A levels at Barnet & Southgate College's Borehamwood campus (the PASE Academy). They stay out of the daily plan and mixed review.
 - **Review:** spaced-repetition flashcards using SM-2.
   - You commit to an answer and rate your confidence before you see the answer.
   - Mixed mode interleaves topics.

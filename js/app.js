@@ -21,6 +21,7 @@ const DEFAULT_STATE = () => ({
     // Daily study budgets (minutes) on top of homework; restDay 0=Sun … 6=Sat
     schoolMins: 45, weekendMins: 90, holidayMins: 120, restDay: 5,
     syncUrl: "", // Google Apps Script web app link for Classroom sync
+    extraSubjects: [], // keys of EXTRA_SUBJECTS switched on
   },
   // Enfield council dates for 2026–27 (Christmas & May half term are typical, unconfirmed): check Latymer's calendar
   holidays: [
@@ -54,14 +55,18 @@ function load() {
   } catch (e) { console.warn("Could not load saved progress", e); }
   return DEFAULT_STATE();
 }
+// Subjects you might switch to (Settings → Subjects you might switch to) join Flashcards, Topics, Blurt and Timed practice when ticked
+for (const k of S.settings.extraSubjects || []) if (EXTRA_SUBJECTS[k]) SUBJECTS[k] = EXTRA_SUBJECTS[k];
 function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) { console.warn("Could not save", e); } }
 function logToday(field, n = 1) { const k = todayKey(); S.log[k] = S.log[k] || {}; S.log[k][field] = (S.log[k][field] || 0) + n; }
 
 // ---------- Cards & scheduling (SM-2 with exam-aware interval cap) ----------
 function allCards() {
-  const built = CARDS.map(([s, t, f, b, sub, src]) => ({ id: "c" + hash(s + "|" + f), s, t, f, b, sub: sub || "General", src: src || "", custom: false }));
+  const built = CARDS.map(([s, t, f, b, sub, src]) => ({ id: "c" + hash(s + "|" + f), s, t, f, b, sub: sub || "General", src: src || "", custom: false })).filter((c) => SUBJECTS[c.s]);
   return built.concat(S.custom.map((c) => ({ ...c, sub: c.sub || (c.id.startsWith("u") && /recall the key point/.test(c.f) ? "Missed in blurts" : "My cards"), custom: true }))).filter((c) => !S.suspended[c.id]);
 }
+// 📄 past-paper question, 🖥 from your class slides; plain spec cards get no icon
+const srcIcon = (src) => !src || /spec$/.test(src) ? "" : /^Class slides/.test(src) ? "🖥 " : "📄 ";
 const isNew = (c) => !S.srs[c.id];
 const isDue = (c, now = Date.now()) => S.srs[c.id] && S.srs[c.id].due <= now;
 function daysToExam(s) {
@@ -160,10 +165,12 @@ const subjOptions = (sel) => Object.entries(SUBJECTS).map(([k, v]) => `<option v
 
 // ---------- Planner (realistic daily plan, editable) ----------
 const SUBJ_KEYS = Object.keys(SUBJECTS);
+// The daily plan and mixed review stick to the subjects you take now; ones you might switch to are studied from their own page
+const PLAN_KEYS = SUBJ_KEYS.filter((k) => !EXTRA_SUBJECTS[k]);
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const parseKey = (k) => new Date(k + "T12:00");
 const addDays = (k, n) => { const d = parseKey(k); d.setDate(d.getDate() + n); return todayKey(d); };
-function examKey() { return SUBJ_KEYS.map((s) => S.settings.exams[s]).filter(Boolean).sort()[0] || null; }
+function examKey() { return PLAN_KEYS.map((s) => S.settings.exams[s]).filter(Boolean).sort()[0] || null; }
 function holidayOn(k) { return (S.holidays || []).find(([a, b]) => k >= a && k <= b); }
 function dayType(k) {
   if (S.dayType[k]) return S.dayType[k];
@@ -200,7 +207,7 @@ function suggestDay(k) {
   const busy = hwLoad + evMins(k); // homework plus your own activities
   let left = (busy >= 120 ? review : Math.max(review, budget - Math.round(busy / 10) * 5)) - review, slot = 0; // very busy day = just flashcards
   // Long weekend/holiday sessions in the run-up: a full timed paper
-  const fullS = SUBJ_KEYS[n % 4], fullP = SUBJECTS[fullS].papers[n % 2];
+  const fullS = PLAN_KEYS[n % PLAN_KEYS.length], fullP = SUBJECTS[fullS].papers[n % 2];
   if ((ph.key === "practise" || ph.key === "exam") && type !== "school" && left >= fullP.mins) {
     const s = fullS, p = fullP;
     add(`Full timed paper: ${SUBJECTS[s].short} – ${p.name}. Mark it with the mark scheme`, p.mins, s, "#practice/" + s);
@@ -216,7 +223,7 @@ function suggestDay(k) {
     after: ["blurt", "cards"],
   };
   while (left >= 20) {
-    const s = SUBJ_KEYS[(n * 2 + slot) % 4], v = SUBJECTS[s], menu = menus[ph.key];
+    const s = PLAN_KEYS[(n * 2 + slot) % PLAN_KEYS.length], v = SUBJECTS[s], menu = menus[ph.key];
     let kind = menu[(n + slot) % menu.length];
     if (kind === "his-timeline" && s !== "his") kind = "cards";
     if (kind === "timed" && left < v.papers.find((x) => x.mins <= 60 && x.marks).mins) kind = "plan"; // don't squeeze a timed answer
@@ -656,8 +663,8 @@ function review(el, [scope]) {
     el.innerHTML = `<h1>Flashcards</h1>
       <p class="muted">Answer before you see the answer. Mixed review shuffles topics together, which helps you tell them apart. Or open a topic below and study one subtopic at a time.</p>
       <div class="grid">
-        <a class="card" href="#review/mixed" style="text-decoration:none;color:inherit"><b>🔀 Mixed: all subjects</b><div class="muted small">${all.filter((c) => isDue(c)).length} due</div></a>
-        ${Object.entries(SUBJECTS).map(([s, v]) => `<a class="card subj" style="--c:${v.colour};text-decoration:none;color:inherit" href="#review/${s}"><b>${v.name}</b><div class="muted small">${all.filter((c) => c.s === s && isDue(c)).length} due · mixed</div></a>`).join("")}
+        <a class="card" href="#review/mixed" style="text-decoration:none;color:inherit"><b>🔀 Mixed: ${PLAN_KEYS.length < SUBJ_KEYS.length ? "your current subjects" : "all subjects"}</b><div class="muted small">${all.filter((c) => PLAN_KEYS.includes(c.s) && isDue(c)).length} due</div></a>
+        ${Object.entries(SUBJECTS).map(([s, v]) => `<a class="card subj" style="--c:${v.colour};text-decoration:none;color:inherit" href="#review/${s}"><b>${v.name}${EXTRA_SUBJECTS[s] ? " 🔭" : ""}</b><div class="muted small">${all.filter((c) => c.s === s && isDue(c)).length} due · mixed</div></a>`).join("")}
       </div>
       <p class="small muted" style="margin-top:1rem"><span class="dot"></span> new <span class="dot due"></span> due <span class="dot ok"></span> learnt, next review scheduled. Tap a question to see its answer.</p>
       ${Object.entries(SUBJECTS).map(([s, v]) => {
@@ -673,14 +680,14 @@ function review(el, [scope]) {
             ${subs.map((sub) => {
               const cc = tc.filter((c) => c.sub === sub);
               return `<details class="tree sub"><summary><span class="tree-name">${esc(sub)}</span><span class="small muted">${countLabel(cardCounts(cc))}</span><a class="btn small" href="#review/sub:${encodeURIComponent([s, t, sub].join("|"))}">Study</a></summary>
-                <ul class="qlist">${cc.map((c) => `<li><details><summary>${statusDot(c)}${c.src ? "📄 " : ""}${esc(c.f)}</summary><div class="small qa">${esc(c.b)}${c.src ? `<div class="muted" style="margin-top:.3rem">Source: ${esc(c.src)}</div>` : ""}</div></details></li>`).join("")}</ul></details>`;
+                <ul class="qlist">${cc.map((c) => `<li><details><summary>${statusDot(c)}${srcIcon(c.src)}${esc(c.f)}</summary><div class="small qa">${esc(c.b)}${c.src ? `<div class="muted" style="margin-top:.3rem">Source: ${esc(c.src)}</div>` : ""}</div></details></li>`).join("")}</ul></details>`;
             }).join("")}</details>`;
         }).join("")}`;
       }).join("")}`;
     return;
   }
   let queue, label, practice = false;
-  if (scope === "mixed") { queue = buildQueue({ subjects: Object.keys(SUBJECTS), mode: "mixed" }); label = "Mixed review"; }
+  if (scope === "mixed") { queue = buildQueue({ subjects: PLAN_KEYS, mode: "mixed" }); label = "Mixed review"; }
   else if (scope.startsWith("topic:") || scope.startsWith("sub:")) {
     // You picked this topic/subtopic: its due cards plus all its new ones, in order
     const [s, t, sub] = scope.slice(scope.indexOf(":") + 1).split("|");
@@ -717,7 +724,7 @@ function runSession(el, queue, { label = "", practice = false } = {}) {
       <div class="row spread small muted"><span><span class="pill" style="background:${v.colour};color:#fff">${v.short}</span> ${esc(c.t)} › ${esc(c.sub)} ${fresh ? '<span class="pill">new</span>' : ""}${practice ? ' <span class="pill">practice</span>' : ""}</span><span>${streakRight >= 3 ? `🔥 ${streakRight} in a row · ` : ""}${queue.length} left</span></div>
       <div class="progress" style="margin:.5rem 0"><div style="width:${(done / (done + queue.length)) * 100}%"></div></div>
       <div class="card fcard fx-in" id="fcard">
-        ${c.src ? `<div class="small src">📄 ${esc(c.src)}</div>` : ""}
+        ${c.src ? `<div class="small src">${srcIcon(c.src) || "📘 "}${esc(c.src)}</div>` : ""}
         <div class="front">${esc(c.f)}</div>
         <textarea id="attempt" placeholder="Type your answer. The app checks it against the key words in the answer."></textarea>
         <label>How confident are you?</label>
@@ -1066,7 +1073,7 @@ function science(el) {
     <p class="muted">Every feature in Astar is based on research into how memory works. This shows the evidence behind each one and where it appears in the app.</p>
     ${SCIENCE.map(([name, ev, what, how]) => `<div class="card" style="margin:.7rem 0"><div class="row spread"><b>${name}</b><span class="pill" style="color:${col[ev]}">Evidence: ${ev}</span></div><p style="margin:.4rem 0">${what}</p><p class="small muted" style="margin:0">In Astar: ${how}</p></div>`).join("")}
     <h2>Your exam boards</h2>
-    <div class="card">${Object.values(SUBJECTS).map((v) => `<div><b>${v.name}</b>: ${v.board}</div>`).join("")}<p class="small muted">Confirmed from Latymer's department pages. Check set texts, options and dates with your teachers.</p></div>
+    <div class="card">${Object.values(SUBJECTS).map((v) => `<div><b>${v.name}</b>: ${v.board}</div>`).join("")}<p class="small muted">Confirmed from Latymer's department pages${PLAN_KEYS.length < SUBJ_KEYS.length ? "; 🔭 subjects are ones you might switch to (see Settings)" : ""}. Check set texts, options and dates with your teachers.</p></div>
     <p class="small muted">Key sources: Dunlosky et al. (2013) <i>Improving Students' Learning With Effective Learning Techniques</i>; EEF Teaching &amp; Learning Toolkit; Cepeda et al. (2008); Rohrer et al. (2014); Butterfield &amp; Metcalfe (2001); Biwer et al. (2023); The Learning Scientists.</p>`;
 }
 
@@ -1077,6 +1084,11 @@ function settings(el) {
     <div class="card"><h2 style="margin-top:0">Year 12 exam dates</h2>
       <p class="small muted" style="margin-top:0">Your end-of-Year 12 exams, which feed into your UCAS predicted grades. Put in the date of each subject's first paper (7 June 2027 is only a placeholder). Next year, change these to your A level dates. Review gaps shrink as the exam gets closer, and new cards stop ${st.stopNewDays} days before it so you can consolidate.</p>
       ${Object.entries(SUBJECTS).map(([s, v]) => `<label>${v.name}</label><input type="date" data-exam="${s}" value="${st.exams[s] || ""}">`).join("")}
+    </div>
+    <div class="card" style="margin-top:1rem"><h2 style="margin-top:0">Subjects you might switch to 🔭</h2>
+      <p class="small muted" style="margin-top:0">Tick a subject to add its flashcards, topics, blurts and timed practice. They stay out of your daily plan and the mixed review, so your current subjects aren't squeezed. Study them from their own card on the Flashcards page.</p>
+      ${Object.entries(EXTRA_SUBJECTS).map(([k, v]) => `<label style="display:flex;gap:.5rem;align-items:center;font-weight:400"><input type="checkbox" data-extra="${k}" ${(st.extraSubjects || []).includes(k) ? "checked" : ""} style="width:auto"> <span><b>${v.name}</b> <span class="small muted">${v.board} · ${CARDS.filter((c) => c[0] === k).length} cards</span></span></label>`).join("")}
+      ${EXTRA_NOTE ? `<p class="small muted">${EXTRA_NOTE}</p>` : ""}
     </div>
     <div class="card" style="margin-top:1rem"><h2 style="margin-top:0">Planner</h2>
       <p class="small muted" style="margin-top:0">Revision time on top of homework. Year 12 is a marathon, not a sprint: steady daily sessions beat cramming. In the last 3 weeks before exams these go up by about a third.</p>
@@ -1124,6 +1136,10 @@ function settings(el) {
       <p class="small muted" style="margin-top:0">Your progress is saved in this browser only. Export a backup now and then, or to move to another device.</p>
       <div class="row"><button id="exp">Export backup</button><label class="btn" style="margin:0;color:var(--ink);font-size:1rem">Import backup<input type="file" id="imp" accept="application/json" hidden></label><button id="reset" class="again">Reset everything</button></div>
     </div>`;
+  el.querySelectorAll("[data-extra]").forEach((i) => i.onchange = () => {
+    const on = new Set(st.extraSubjects || []); i.checked ? on.add(i.dataset.extra) : on.delete(i.dataset.extra);
+    st.extraSubjects = [...on]; save(); location.reload(); // subjects are set up when the app starts
+  });
   el.querySelectorAll("[data-exam]").forEach((i) => i.onchange = () => { st.exams[i.dataset.exam] = i.value; save(); });
   el.querySelectorAll("[data-set]").forEach((i) => i.onchange = () => { st[i.dataset.set] = Math.max(0, +i.value || 0); save(); });
   $("#exportSlides", el).onclick = (e) => {
