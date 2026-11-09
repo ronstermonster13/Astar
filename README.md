@@ -13,6 +13,15 @@ An A level revision app built around the strongest evidence on how people learn.
 
 Open `index.html` in a browser. There is nothing to install. Progress is saved in that browser, and you can export a backup from **Settings**.
 
+## On your phone
+
+Astar is online at https://ronstermonster13.github.io/Astar/ (GitHub Pages, updated each time a release is pushed).
+
+- **iPhone:** open the link in Safari, tap Share, then **Add to Home Screen**.
+- **Android:** open it in Chrome, tap ⋮, then **Install app** (or **Add to Home screen**).
+
+Once installed it opens full screen and works offline. Progress is saved on each device separately: use **Settings → Export backup** on one and **Import backup** on the other to move it across.
+
 ## Features and the research behind them
 
 - **Planner:** a month calendar showing homework on its due date (synced from Classroom), exams, holidays, rest days and planned revision time. Tap a day to see and edit its plan.
@@ -37,6 +46,12 @@ Open `index.html` in a browser. There is nothing to install. Progress is saved i
   - Your typed answer is checked against the key words in the model answer (looks right / partly / doesn't match). It's a hint; you have the final say.
   - A green tick animation for right answers and a red shake for wrong ones, with a score ring at the end of each session (reduced if your device asks for less motion).
   - Studying a subtopic with nothing due gives a practice round that doesn't change your review schedule.
+- **Notes ✍️:** write or dictate your own notes in lessons, filed by subject and topic, with search.
+  - Each note makes draft flashcards as you type, and it's saved as you go.
+  - *Save notes for checking* puts unchecked notes in a file in Downloads. Tell Claude "check my notes" and reload when it's done (the steps Claude follows are in `CLAUDE.md`, and the results go in `js/notes-checked.js`).
+  - The Notes page then shows the corrected note, what was changed, and anything to ask your teacher. Your original stays underneath.
+  - Only checked cards join your reviews, ahead of other new cards. Changing a note's text takes its cards out until it's checked again.
+  - Dictation needs a browser with speech recognition. Chrome sends the audio to Google to transcribe.
 - **Subjects you might switch to 🔭:** in Settings, tick Business (AQA 7138), PE (AQA 7582) or Psychology (AQA 7182, board unconfirmed) to add their flashcards, topics, blurts and timed practice. Business and PE match the A levels at Barnet & Southgate College's Borehamwood campus (the PASE Academy). They stay out of the daily plan and mixed review.
 - **Review:** spaced-repetition flashcards using SM-2.
   - You commit to an answer and rate your confidence before you see the answer.

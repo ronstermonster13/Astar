@@ -165,3 +165,19 @@ button.suggest { animation: pulse 1.2s ease-in-out infinite; font-weight: 700; }
 }
 
 .src { display: inline-block; background: var(--soft); border-radius: 99px; padding: .1rem .6rem; margin-bottom: .3rem; }
+
+/* Lesson notes */
+.note-input { min-height: 18rem; }
+.note-body { padding: .2rem .9rem .8rem; }
+.note-text h3, .note-body h3 { font-size: 1rem; margin: 1rem 0 .3rem; }
+.note-text p { margin: .3rem 0; }
+.note-text ul { margin: .3rem 0; padding-left: 1.3rem; }
+.note-wait { background: #fef3c7; color: #78350f; }
+.note-ok { background: #dcfce7; color: #14532d; }
+.note-wrong { background: #fee2e2; color: #7f1d1d; }
+.alert.unsure { background: #fef3c7; color: #78350f; }
+details.tree.sub > summary { flex-wrap: wrap; }
+
+/* Installed on a phone: keep the top bar clear of the notch and the content clear of the home bar */
+.topbar { padding-top: max(.5rem, env(safe-area-inset-top)); padding-left: max(1rem, env(safe-area-inset-left)); padding-right: max(1rem, env(safe-area-inset-right)); }
+main#view { padding-bottom: calc(4rem + env(safe-area-inset-bottom)); }

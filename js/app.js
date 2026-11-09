@@ -40,6 +40,7 @@ const DEFAULT_STATE = () => ({
     his: { words: 0, min: 3000, max: 3500, deadline: "", notes: "", done: {} },
   },
   timeline: {}, reflections: [],
+  notes: [], noteDraft: null, noteLast: "",
 });
 let S = load();
 function load() {
@@ -63,10 +64,10 @@ function logToday(field, n = 1) { const k = todayKey(); S.log[k] = S.log[k] || {
 // ---------- Cards & scheduling (SM-2 with exam-aware interval cap) ----------
 function allCards() {
   const built = CARDS.map(([s, t, f, b, sub, src]) => ({ id: "c" + hash(s + "|" + f), s, t, f, b, sub: sub || "General", src: src || "", custom: false })).filter((c) => SUBJECTS[c.s]);
-  return built.concat(S.custom.map((c) => ({ ...c, sub: c.sub || (c.id.startsWith("u") && /recall the key point/.test(c.f) ? "Missed in blurts" : "My cards"), custom: true }))).filter((c) => !S.suspended[c.id]);
+  return built.concat(noteCards(), S.custom.map((c) => ({ ...c, sub: c.sub || (c.id.startsWith("u") && /recall the key point/.test(c.f) ? "Missed in blurts" : "My cards"), custom: true }))).filter((c) => !S.suspended[c.id]);
 }
-// 📄 past-paper question, 🖥 from your class slides; plain spec cards get no icon
-const srcIcon = (src) => !src || /spec$/.test(src) ? "" : /^Class slides/.test(src) ? "🖥 " : "📄 ";
+// 📄 past-paper question, 🖥 from your class slides, ✍️ from your checked lesson notes; plain spec cards get no icon
+const srcIcon = (src) => !src || /spec$/.test(src) ? "" : /^Class slides/.test(src) ? "🖥 " : /^My notes/.test(src) ? "✍️ " : "📄 ";
 const isNew = (c) => !S.srs[c.id];
 const isDue = (c, now = Date.now()) => S.srs[c.id] && S.srs[c.id].due <= now;
 function daysToExam(s) {
@@ -85,6 +86,7 @@ function newAllowed(s) {
 // Once you tick any "covered in class" topic for a subject, new cards only come from covered topics
 function hasCoverage(s) { return SUBJECTS[s].topics.some((t) => S.covered[s + "|" + t] === true); }
 function isCovered(c) {
+  if (c.note) return true; // you wrote a note on it in a lesson, so it has been taught
   if (!hasCoverage(c.s) || !SUBJECTS[c.s].topics.includes(c.t)) return true;
   return S.covered[c.s + "|" + c.t] === true;
 }
@@ -131,7 +133,8 @@ function buildQueue({ subjects, topic, mode }) {
   const due = cards.filter((c) => isDue(c));
   let budget = newLeftToday();
   const fresh = [];
-  for (const c of cards) {
+  // Cards from your own lesson notes come first: they're what you've just been taught
+  for (const c of cards.filter((x) => x.note).concat(cards.filter((x) => !x.note))) {
     if (budget <= 0) break;
     if (isNew(c) && newAllowed(c.s) && isCovered(c)) { fresh.push(c); budget--; }
   }
@@ -140,7 +143,7 @@ function buildQueue({ subjects, topic, mode }) {
 }
 
 // ---------- Router ----------
-const routes = { home, planner, review, blurt, practice, papers, topics, timeline, coursework, cards: cardsView, science, settings };
+const routes = { home, planner, review, blurt, practice, papers, topics, timeline, coursework, cards: cardsView, notes, science, settings };
 function render() {
   const [name, ...rest] = (location.hash.slice(1) || "home").split("/");
   const fn = routes[name] || home;
@@ -1064,6 +1067,175 @@ function cardsView(el) {
   $("#fs", el).onchange = draw; $("#fq", el).oninput = draw;
   const u = $("#unhide", el); if (u) u.onclick = () => { S.suspended = {}; save(); render(); };
   draw();
+}
+
+// ---------- Lesson notes ----------
+// Notes are saved in the browser. js/notes-checked.js holds Claude's check of each note, matched by note id and a hash of its
+// text, so editing a note sends it back for checking. Only checked cards reach your reviews. See CLAUDE.md for the check itself.
+const myNotes = () => S.notes.filter((n) => SUBJECTS[n.s]);
+function noteCheck(n) { const c = NOTES_CHECKED[n.id]; return c && c.hash === hash(n.text) ? c : null; }
+const noteDate = (k) => parseKey(k).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+function noteCards() {
+  return myNotes().flatMap((n) => {
+    const c = noteCheck(n);
+    return !c ? [] : c.cards.map(([f, b, sub]) => ({ id: "n" + hash(n.id + "|" + f), s: n.s, t: n.t, f, b, sub: sub || "My lesson notes", src: `My notes: ${n.title}, ${noteDate(n.date)}`, note: true, custom: false }));
+  });
+}
+// Instant first-draft cards from how a note is written. Claude's check replaces these with proper ones.
+function draftCards(text) {
+  const out = [], seen = new Set();
+  const add = (f, b) => { const k = f.toLowerCase(); if (!seen.has(k)) { seen.add(k); out.push([f, b]); } };
+  const lines = text.split("\n").filter((l) => !/^\s*#/.test(l)).map((l) => l.replace(/^\s*(?:[-*•–]|\d+[.)])\s+/, "").trim()).filter(Boolean);
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const wordCount = (x) => x.trim().split(/\s+/).length;
+    if (/\?$/.test(l)) { if (lines[i + 1] && !/\?$/.test(lines[i + 1])) add(l, lines[++i]); continue; } // question, answer on the next line
+    let m = l.match(/^(.{2,60}?)\s*(?::|=|→|->|\s[-–—]\s)\s*(.{3,})$/); // Term: meaning
+    if (m && wordCount(m[1]) <= 7) { add(/^\d{4}s?$/.test(m[1]) ? `What happened in ${m[1]}?` : `What is meant by "${m[1]}"?`, m[2]); continue; }
+    m = l.match(/^([^,.;]{2,50}?)\s+(is|are|was|were)\s+(.{5,})$/i); // X is Y
+    if (m && wordCount(m[1]) <= 6 && !/^(it|this|that|these|those|he|she|they|there|we|you|i)\b/i.test(m[1])) { add(`What ${m[2].toLowerCase()} ${m[1].replace(/^(The|A|An)\b/, (a) => a.toLowerCase())}?`, l); continue; }
+    m = l.match(/\b(1\d{3}|20\d\d)\b/); // a line with a year in it
+    if (m && wordCount(l) >= 4) add(`What happened in ${m[1]}?`, l);
+  }
+  return out;
+}
+// Displays a note: "# heading", "- bullet" and "Term: meaning" lines get formatted; the rest are paragraphs
+function noteHtml(text) {
+  let html = "", inList = false;
+  const term = (l) => { const m = l.match(/^([^:]{2,60}):\s+(.+)$/); return m ? `<b>${esc(m[1])}:</b> ${esc(m[2])}` : esc(l); };
+  for (const raw of text.split("\n")) {
+    const l = raw.trim(), b = l.match(/^(?:[-*•–]|\d+[.)])\s+(.*)$/);
+    if (b && !inList) { html += "<ul>"; inList = true; }
+    if (!b && inList) { html += "</ul>"; inList = false; }
+    if (b) html += `<li>${term(b[1])}</li>`;
+    else if (/^#/.test(l)) html += `<h3>${esc(l.replace(/^#+\s*/, ""))}</h3>`;
+    else if (l) html += `<p>${term(l)}</p>`;
+  }
+  return html + (inList ? "</ul>" : "");
+}
+function noteStatus(n) {
+  const c = noteCheck(n); if (!c) return `<span class="pill note-wait">⏳ Waiting for check</span>`;
+  const wrong = c.issues.filter((i) => i.type === "wrong").length, unsure = c.issues.length - wrong;
+  return `<span class="pill note-ok">✓ Checked</span>${wrong ? ` <span class="pill note-wrong">${wrong} corrected</span>` : ""}${unsure ? ` <span class="pill note-wait">${unsure} to ask about</span>` : ""}`;
+}
+const cardList = (cards) => cards.length ? `<ul class="qlist">${cards.map(([f, b]) => `<li><details><summary>${esc(f)}</summary><div class="small qa">${esc(b)}</div></details></li>`).join("")}</ul>` : `<p class="small muted">None yet.</p>`;
+function noteBody(n) {
+  const c = noteCheck(n);
+  return `<div class="note-body">
+    ${c && c.issues.length ? c.issues.map((i) => `<div class="alert small ${i.type === "wrong" ? "" : "unsure"}">${i.type === "wrong" ? `<b>Corrected.</b> You wrote "${esc(i.you)}". <b>${esc(i.fix)}</b>` : `<b>Ask your teacher.</b> "${esc(i.you)}". ${esc(i.fix)}`}${i.why ? ` <span>${esc(i.why)}</span>` : ""}</div>`).join("") : ""}
+    ${c && c.summary ? `<p class="small muted">${esc(c.summary)}</p>` : ""}
+    <div class="note-text">${noteHtml(c ? c.text : n.text)}</div>
+    ${c && c.text !== n.text ? `<details class="small"><summary>What you originally wrote</summary><div class="qa">${esc(n.text)}</div></details>` : ""}
+    <h3>${c ? `Flashcards in your reviews (${c.cards.length})` : `Draft flashcards (${draftCards(n.text).length}), not in your reviews until checked`}</h3>
+    ${cardList(c ? c.cards : draftCards(n.text))}
+    <div class="row" style="margin-top:.6rem"><a class="btn small" href="#notes/edit/${esc(n.id)}">Edit</a><button class="small" data-note-del="${esc(n.id)}">Delete</button></div>
+  </div>`;
+}
+let noteMsg = "";
+function notes(el, [mode, id]) {
+  if (mode === "new" || mode === "edit") return noteEditor(el, mode === "edit" ? id : null);
+  const waiting = myNotes().filter((n) => !noteCheck(n));
+  el.innerHTML = `<div class="row spread"><h1>Notes</h1><a class="btn primary" href="#notes/new">＋ New note</a></div>
+    <p class="muted">Write up what you cover in lessons. Each note becomes draft flashcards straight away. Once Claude has checked a note, the corrected version appears here and its cards join your reviews.</p>
+    ${noteMsg ? `<div class="alert ok small">${esc(noteMsg)}</div>` : ""}
+    ${waiting.length ? `<div class="card" style="margin-bottom:1rem"><b>${waiting.length} note${waiting.length === 1 ? "" : "s"} waiting for a check</b>
+      <p class="small muted" style="margin:.3rem 0 .6rem">This saves them to a file in your Downloads. Then tell Claude "check my notes" and reload this page when it's done. Nothing is uploaded by the app.</p>
+      <button id="sendNotes">Save notes for checking</button> <span id="sendMsg" class="small"></span></div>` : ""}
+    ${S.notes.length ? `<input id="noteQ" placeholder="Search your notes…" style="max-width:320px">` : ""}
+    <div id="noteTree"></div>`;
+  noteMsg = "";
+  const draw = (q = "") => {
+    q = q.toLowerCase();
+    const shown = myNotes().filter((n) => !q || (n.title + " " + n.t + " " + n.text + " " + ((noteCheck(n) || {}).text || "")).toLowerCase().includes(q));
+    const tree = $("#noteTree", el);
+    tree.innerHTML = !S.notes.length ? `<div class="card"><p style="margin:0">No notes yet. Add one in your next lesson.</p></div>`
+      : !shown.length ? `<p class="muted">No notes match that.</p>`
+      : Object.entries(SUBJECTS).map(([s, v]) => {
+        const sn = shown.filter((n) => n.s === s); if (!sn.length) return "";
+        const ts = [...new Set(v.topics.concat(sn.map((n) => n.t)))].filter((t) => sn.some((n) => n.t === t));
+        return `<h2 style="border-left:5px solid ${v.colour};padding-left:.5rem">${v.name} <span class="small muted" style="font-weight:400">${sn.length} note${sn.length === 1 ? "" : "s"}</span></h2>
+          ${ts.map((t) => { const tn = sn.filter((n) => n.t === t).sort((a, b) => a.date.localeCompare(b.date));
+            return `<details class="tree" ${q ? "open" : ""}><summary><span class="tree-name">${esc(t)}</span><span class="small muted">${tn.length}</span></summary>
+              ${tn.map((n) => `<details class="tree sub" ${q ? "open" : ""}><summary><span class="tree-name">${esc(n.title)}<span class="small muted" style="font-weight:400"> · ${noteDate(n.date)}</span></span>${noteStatus(n)}</summary>${noteBody(n)}</details>`).join("")}</details>`; }).join("")}`;
+      }).join("");
+    tree.querySelectorAll("[data-note-del]").forEach((b) => b.onclick = () => {
+      if (!confirm("Delete this note and its flashcards?")) return;
+      S.notes = S.notes.filter((n) => n.id !== b.dataset.noteDel); save(); render();
+    });
+  };
+  draw();
+  const q = $("#noteQ", el); if (q) q.oninput = () => draw(q.value);
+  const send = $("#sendNotes", el);
+  if (send) send.onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify({ app: "astar-notes", exported: todayKey(), notes: waiting.map((n) => ({ id: n.id, hash: hash(n.text), subject: SUBJECTS[n.s].name, board: SUBJECTS[n.s].board, topic: n.t, title: n.title, date: n.date, text: n.text })) }, null, 1)], { type: "application/json" }));
+    a.download = `astar-notes-${todayKey()}.json`; a.click();
+    const m = $("#sendMsg", el); m.textContent = `Saved ${waiting.length} to your Downloads. Now tell Claude "check my notes".`; m.style.color = "var(--good)";
+  };
+}
+function noteEditor(el, id) {
+  const editing = id ? S.notes.find((n) => n.id === id) : null;
+  if (id && !editing) { location.hash = "#notes"; return; }
+  const draftFits = S.noteDraft && S.noteDraft.id === (id || null);
+  const d = draftFits ? S.noteDraft : editing ? { ...editing } : { s: S.noteLast && SUBJECTS[S.noteLast] ? S.noteLast : PLAN_KEYS[0], t: "", title: "", date: todayKey(), text: "" };
+  const topicOptions = (s, sel) => {
+    const list = SUBJECTS[s].topics.concat(sel && !SUBJECTS[s].topics.includes(sel) ? [sel] : []);
+    return `<option value="">Work it out from my note</option>` + list.map((t) => `<option value="${esc(t)}" ${t === sel ? "selected" : ""}>${esc(t)}</option>`).join("");
+  };
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  el.innerHTML = `<h1>${editing ? "Edit note" : "New note"}</h1>
+    ${draftFits && d.text ? `<p class="small muted">Carried on from your unsaved note.</p>` : ""}
+    ${editing && noteCheck(editing) ? `<div class="alert unsure small">This note has been checked. If you change its text, its cards leave your reviews until it's checked again.</div>` : ""}
+    <div class="card">
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
+        <div><label for="ns">Subject</label><select id="ns">${subjOptions(d.s)}</select></div>
+        <div><label for="nt">Topic</label><select id="nt">${topicOptions(d.s, d.t)}</select></div>
+        <div><label for="nd">Lesson date</label><input id="nd" type="date" value="${esc(d.date)}"></div>
+      </div>
+      <label for="nh">Lesson title (optional)</label><input id="nh" value="${esc(d.title)}" placeholder="e.g. Enzyme inhibition">
+      <div class="row spread" style="margin-top:.6rem"><label for="nx" style="margin:0">Your notes</label>${SR ? `<button id="dictate" class="small" type="button">🎙 Dictate</button>` : ""}</div>
+      <textarea id="nx" class="note-input" style="margin-top:.3rem" placeholder="Term: what it means&#10;- A key point&#10;In 1861 Alexander II emancipated the serfs">${esc(d.text)}</textarea>
+      <p class="small muted" style="margin:.4rem 0"><span id="draftCount"></span> Lines like "Term: meaning" and "X is Y" make the best draft cards. Claude writes cards for everything else when it checks the note.</p>
+      <div class="row"><button class="primary" id="saveNote">Save note</button><a class="btn" href="#notes" id="cancelNote">Cancel</a> <span id="noteErr" class="small" style="color:var(--bad)"></span></div>
+    </div>`;
+  const persist = () => { S.noteDraft = { id: id || null, s: $("#ns", el).value, t: $("#nt", el).value, title: $("#nh", el).value, date: $("#nd", el).value, text: $("#nx", el).value }; save(); };
+  const count = () => { const n = draftCards($("#nx", el).value).length; $("#draftCount", el).textContent = `${n} draft card${n === 1 ? "" : "s"} so far.`; };
+  count();
+  $("#ns", el).onchange = () => { $("#nt", el).innerHTML = topicOptions($("#ns", el).value, ""); persist(); };
+  ["#nt", "#nd", "#nh"].forEach((x) => { $(x, el).onchange = persist; });
+  $("#nx", el).oninput = () => { persist(); count(); };
+  $("#cancelNote", el).onclick = () => { S.noteDraft = null; save(); };
+  $("#saveNote", el).onclick = () => {
+    const s = $("#ns", el).value, text = $("#nx", el).value.trim(), title = $("#nh", el).value.trim(), date = $("#nd", el).value || todayKey();
+    if (!text) { $("#noteErr", el).textContent = "Write something first."; return; }
+    const t = $("#nt", el).value || matchTopics(s, title + " " + text)[0] || "Other notes";
+    const finalTitle = title || text.split("\n")[0].replace(/^[-*•#\s]+/, "").slice(0, 50);
+    if (editing) Object.assign(editing, { s, t, title: finalTitle, date, text });
+    else S.notes.push({ id: "n" + hash(text + Date.now() + Math.random()), s, t, title: finalTitle, date, text, added: Date.now() });
+    S.noteDraft = null; S.noteLast = s; save();
+    noteMsg = `Saved under ${SUBJECTS[s].short} › ${t}. It has ${draftCards(text).length} draft cards, waiting for a check.`;
+    location.hash = "#notes";
+  };
+  // Dictation uses the browser's own speech recognition, where it has it (Chrome sends the audio to Google to transcribe)
+  const dict = $("#dictate", el);
+  if (dict) {
+    let rec = null, on = false;
+    const stop = () => { on = false; if (rec) rec.stop(); dict.textContent = "🎙 Dictate"; window.removeEventListener("hashchange", stop); };
+    dict.onclick = () => {
+      if (on) return stop();
+      rec = new SR(); rec.lang = "en-GB"; rec.continuous = true; rec.interimResults = false;
+      rec.onresult = (e) => {
+        const box = $("#nx", el); let said = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) said += e.results[i][0].transcript;
+        said = said.trim(); if (!said) return;
+        box.value += (box.value && !box.value.endsWith("\n") ? "\n" : "") + said; persist(); count();
+      };
+      rec.onerror = (e) => { if (e.error !== "no-speech" && e.error !== "aborted") { stop(); $("#noteErr", el).textContent = e.error === "not-allowed" ? "Astar isn't allowed to use the microphone. Allow it in your browser's site settings." : "Dictation stopped: " + e.error; } };
+      rec.onend = () => { if (on) rec.start(); }; // browsers stop listening after a silence
+      on = true; rec.start(); dict.textContent = "⏹ Stop dictating";
+      window.addEventListener("hashchange", stop);
+    };
+  }
 }
 
 // ---------- Science ----------

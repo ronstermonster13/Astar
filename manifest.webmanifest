@@ -1,0 +1,14 @@
+{
+  "name": "Astar Revision",
+  "short_name": "Astar",
+  "description": "A level revision: planner, flashcards, blurts and timed practice.",
+  "start_url": "./index.html#home",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#1e293b",
+  "theme_color": "#1e293b",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
