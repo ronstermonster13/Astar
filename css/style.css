@@ -181,3 +181,12 @@ details.tree.sub > summary { flex-wrap: wrap; }
 /* Installed on a phone: keep the top bar clear of the notch and the content clear of the home bar */
 .topbar { padding-top: max(.5rem, env(safe-area-inset-top)); padding-left: max(1rem, env(safe-area-inset-left)); padding-right: max(1rem, env(safe-area-inset-right)); }
 main#view { padding-bottom: calc(4rem + env(safe-area-inset-bottom)); }
+
+/* Answer split into points after checking: covered points ticked, missing ones flagged */
+ul.points { list-style: none; padding-left: 0; }
+ul.points li { padding: .2rem 0; }
+ul.points li.pt-got b { color: var(--good); }
+ul.points li.pt-miss { color: var(--bad); }
+ul.points li.pt-miss .small { border: 1px solid currentColor; border-radius: 4px; padding: 0 .3rem; }
+p.next { margin: 1rem 0 .6rem; padding: .6rem .8rem; background: var(--soft); border-radius: 8px; }
+ul.points.back { white-space: normal; }

@@ -31,6 +31,7 @@ Once installed it opens full screen and works offline. Progress is saved on each
     - **Build & consolidate:** blurts, making cards from class notes, essay plans.
     - **Exam practice** (from 8 weeks before): timed answers.
     - **Exam prep** (final 3 weeks, about a third more time): full past papers.
+  - **Spaced repeats:** a 10-minute card round on topics you blurted, or were taught in class, 2 and 7 days earlier.
   - Tick tasks off, delete them, add your own, and mark any day as school, weekend, holiday or rest.
 - **Homework:**
   - **Automatic Google Classroom sync.** A small Google Apps Script (`js/classroom-script.js`; the setup steps are in Settings) runs under your school account. Each time Astar opens, it pulls in new assignments and ticks off work you've handed in.
@@ -43,7 +44,8 @@ Once installed it opens full screen and works offline. Progress is saved on each
   - **Past-paper cards** (📄) come from real exam questions, each citing its paper. Answers are based on the mark scheme: 45 Biology (AQA 7402, 2017–24), 37 History (AQA 7042 1H/2E, 2020–23), 40 RS (OCR H573, 2021–24) and 31 English (Eduqas A720QS, 2017–25, your set texts only).
   - Only content you'll be examined on: Paradise Lost cards cover Book IX only (the only Book Eduqas sets), and History cards cover only components 1H and 2E.
   - **Cards from your class slides:** Settings → Google Classroom sync → *Export class slides for Claude* saves the text of the Google Slides and Docs attached to your Classroom posts to a file in Downloads. Big batches are read in parts (about 3 minutes each) to stay inside Google's time limit. Claude turns the file into spec-aligned cards: so far 302 cards, each citing its lesson: 98 Biology (biological molecules, cells, membrane transport), 116 History (Russia 1855–94 and the English Revolution 1625–29), 57 English (Ted Hughes and the context for Loot) and 31 RS (Plato and Aristotle).
-  - Your typed answer is checked against the key words in the model answer (looks right / partly / doesn't match). It's a hint; you have the final say.
+  - Your typed answer is checked point by point: the model answer is split into its points, each ticked if you covered it or flagged as missing, with a score like 3/5 points (looks right / partly / doesn't match). Short answers are checked by key words. It's a hint; you have the final say.
+  - The end of each session shows how many cards were right, hard and wrong first time, the subtopics to reread (where most misses were) and one **Next:** step. These three ideas come from the Study Desk Claude plugin.
   - A green tick animation for right answers and a red shake for wrong ones, with a score ring at the end of each session (reduced if your device asks for less motion).
   - Studying a subtopic with nothing due gives a practice round that doesn't change your review schedule.
 - **Notes ✍️:** write or dictate your own notes in lessons, filed by subject and topic, with search.

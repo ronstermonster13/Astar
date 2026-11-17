@@ -219,6 +219,29 @@ function suggestDay(k) {
   // Coursework block on weekends/holidays when a deadline is set
   const nea = ["eng", "his"].find((s) => S.nea[s].deadline && S.nea[s].deadline >= k);
   if (nea && type !== "school" && left >= 25) { add(`Coursework: ${SUBJECTS[nea].short} NEA. Next milestone`, 25, nea, "#coursework"); left -= 25; }
+  // Spaced repeats: a quick card round on topics you blurted or were taught 2 and 7 days ago (first pass, then repeat)
+  if (k >= todayKey()) {
+    const reps = [];
+    for (const gap of [2, 7]) {
+      const day = addDays(k, -gap);
+      S.blurts.filter((b) => todayKey(new Date(b.date)) === day && PLAN_KEYS.includes(b.s)).forEach((b) => {
+        const t = BLURT_TOPIC[b.t] || b.t;
+        reps.push({ s: b.s, t, label: b.t, why: `you blurted it ${gap} days ago` });
+      });
+      Object.entries(S.taught).filter(([key, v]) => v.date === day && S.covered[key] !== false).forEach(([key]) => {
+        const i = key.indexOf("|"), s = key.slice(0, i);
+        if (PLAN_KEYS.includes(s)) reps.push({ s, t: key.slice(i + 1), label: key.slice(i + 1), why: `taught in class ${gap} days ago` });
+      });
+    }
+    const seen = new Set();
+    for (const r of reps) {
+      if (left < 10 || seen.size >= 2 || seen.has(r.s + r.t)) continue;
+      seen.add(r.s + r.t);
+      const hasCards = allCards().some((c) => c.s === r.s && c.t === r.t);
+      add(`Quick repeat: ${r.label.replace(/^(Phil|Ethics|DCT|Russia|Eng Rev|NEA): |^\d+\. /, "")} (${SUBJECTS[r.s].short}), ${r.why}`, 10, r.s, hasCards ? "#review/topic:" + encodeURIComponent(r.s + "|" + r.t) : "#blurt");
+      left -= 10;
+    }
+  }
   const menus = {
     build: ["blurt", "cards", "plan", "blurt", "his-timeline"],
     practise: ["timed", "blurt", "plan", "timed", "paperq"],
@@ -639,8 +662,10 @@ function home(el) {
 // ---------- Review ----------
 // Rough automatic check of a typed answer: how many of the answer's key words did you include?
 const STOP = new Set("about above after again also although among another because been before being below between both but called cannot could does doing down during each either every from further have having here into itself just more most much must neither only other over same should since some such than that their them then there these they this those through under until upon very were what when where which while whom whose will with within without would your".split(" "));
+// Crude stemming so "adds"/"adding" and "form"/"forms" count as the same word
+const stem = (w) => { const b = /\d/.test(w) ? w : w.replace(/(ing|ed|es|s)$/, ""); return (b.length >= 3 ? b : w).slice(0, 6); };
 function keyWords(text) {
-  return [...new Set((text || "").toLowerCase().replace(/[‘’']/g, "").split(/[^a-z0-9à-ÿ⁺⁻₂]+/).filter((w) => (w.length >= 4 || /\d/.test(w)) && !STOP.has(w)).map((w) => w.slice(0, 6)))];
+  return [...new Set((text || "").toLowerCase().replace(/[‘’']/g, "").split(/[^a-z0-9à-ÿ⁺⁻₂]+/).filter((w) => (w.length >= 4 || /\d/.test(w)) && !STOP.has(w)).map(stem))];
 }
 function checkAnswer(typed, answer, question = "") {
   // Words already in the question (e.g. the visible half of a quote) and bracketed extras don't count
@@ -649,8 +674,25 @@ function checkAnswer(typed, answer, question = "") {
   if (!keys.length) keys = keyWords(answer);
   if (!typed.trim() || !keys.length) return null;
   const mine = new Set(keyWords(typed)), hit = keys.filter((k) => mine.has(k));
-  const score = hit.length / keys.length;
-  return { score, verdict: score >= 0.5 ? "right" : score >= 0.2 ? "partly" : "wrong", hit: hit.length, total: keys.length };
+  let score = hit.length / keys.length;
+  // Point by point: which of the answer's points did you cover? (ideas from the Study Desk plugin's grading)
+  const points = answerPoints(answer).map((text) => {
+    const pk = keyWords(text.replace(/\([^)]*\)/g, " ")).filter((k) => !given.has(k));
+    return { text, got: pk.length ? pk.filter((k) => mine.has(k)).length / pk.length >= 0.5 : null };
+  });
+  const scored = points.filter((x) => x.got !== null), got = scored.filter((x) => x.got).length;
+  const byPoint = scored.length >= 2;
+  if (byPoint) score = got / scored.length;
+  const [ok, part] = byPoint ? [0.7, 0.3] : [0.5, 0.2]; // with points, "right" means most of them
+  return { score, verdict: score >= ok ? "right" : score >= part ? "partly" : "wrong", hit: hit.length, total: keys.length,
+    points: byPoint ? points : null, got, of: scored.length };
+}
+// Split a model answer into separate points: bullets and lines first, then sentences or semicolons
+function answerPoints(answer) {
+  const lines = answer.split(/\n+/).map((x) => x.replace(/^\s*[•\-–*]\s*/, "").trim()).filter(Boolean);
+  if (lines.length >= 2) return lines;
+  const parts = answer.split(/;\s+|(?<=[a-z0-9)\]'"’])\.\s+(?=[A-Z])/).map((x) => x.trim()).filter((x) => keyWords(x).length >= 2);
+  return parts.length >= 2 ? parts : [answer];
 }
 
 function cardCounts(list) {
@@ -703,7 +745,8 @@ function review(el, [scope]) {
 }
 
 function runSession(el, queue, { label = "", practice = false } = {}) {
-  const total = queue.length, missed = [];
+  const total = queue.length, missed = [], tally = { right: 0, hard: 0, wrong: 0 }, firstSeen = new Set();
+  const queueSeen = [];
   let done = 0, correct = 0, conf = 0, streakRight = 0;
   if (!total) {
     el.innerHTML = `<div class="card flash"><h1>All caught up ✅</h1><p>Nothing is due here. Spacing works because you wait, so come back tomorrow. Meanwhile try a <a href="#blurt">blurt</a> or <a href="#practice">timed practice</a>.</p></div>`;
@@ -713,15 +756,25 @@ function runSession(el, queue, { label = "", practice = false } = {}) {
     if (!queue.length) {
       save();
       const pc = Math.round((correct / Math.max(1, done)) * 100);
+      // The two subtopics with the most misses, and one clear next step
+      const bySub = {}; missed.forEach((c) => { const k = [c.s, c.t, c.sub].join("|"); bySub[k] = (bySub[k] || 0) + 1; });
+      const reread = Object.entries(bySub).sort((a, b) => b[1] - a[1]).slice(0, 2);
+      const blurt = BLURTS.concat(S.customBlurts).find((b) => missed.concat(queueSeen).some((c) => c.s === b.s && (BLURT_TOPIC[b.t] === c.t || b.t === c.t)));
+      const next = reread.length ? `come back tomorrow and study <a href="#review/sub:${encodeURIComponent(reread[0][0])}">${esc(reread[0][0].split("|")[2])}</a>.`
+        : blurt ? `<a href="#blurt/${encodeURIComponent(blurt.t)}">blurt ${esc(blurt.t)}</a> from memory to check you can recall it without prompts.`
+        : `try a <a href="#practice">timed answer</a> to use what you know under exam conditions.`;
       el.innerHTML = `<div class="card flash fx-in"><h1>Session complete ${pc >= 80 ? "🎉" : pc >= 50 ? "👍" : "💪"}</h1>
         <div class="ring" style="--p:${pc}"><span>${pc}%</span></div>
-        <p style="text-align:center">${done} answers · ${correct} right first time or after a retry</p>
+        <p style="text-align:center">${firstSeen.size} cards: <b>${tally.right} right</b>, ${tally.hard} hard, ${tally.wrong} wrong first time${done > firstSeen.size ? ` · ${done - firstSeen.size} retries` : ""}</p>
+        ${reread.length ? `<h2>Reread</h2><p class="small muted" style="margin-top:0">Where most of your misses were. Study these again tomorrow, not tonight: the gap helps it stick.</p><div class="row">${reread.map(([key, n]) => `<a class="btn small" href="#review/sub:${encodeURIComponent(key)}">${esc(key.split("|")[2])} <span class="muted">(${n} missed)</span></a>`).join("")}</div>` : ""}
         ${missed.length ? `<h2>Worth another look</h2><ul class="qlist">${[...new Map(missed.map((c) => [c.id, c])).values()].map((c) => `<li><details><summary>${esc(c.f)}</summary><div class="small qa">${esc(c.b)}</div></details></li>`).join("")}</ul>` : ""}
         <p class="muted small">${practice ? "Practice round: your review schedule wasn't changed." : "Sleep helps you keep what you've just learned. Your next reviews are scheduled automatically."}</p>
+        <p class="next"><b>Next:</b> ${next}</p>
         <div class="row"><a class="btn primary" href="#review">Back to flashcards</a><a class="btn" href="#home">Today</a></div></div>`;
       return;
     }
     const c = queue[0], v = SUBJECTS[c.s], fresh = isNew(c);
+    if (!queueSeen.includes(c)) queueSeen.push(c);
     conf = 0;
     el.innerHTML = `<div class="flash">
       <div class="row spread small muted"><span><span class="pill" style="background:${v.colour};color:#fff">${v.short}</span> ${esc(c.t)} › ${esc(c.sub)} ${fresh ? '<span class="pill">new</span>' : ""}${practice ? ' <span class="pill">practice</span>' : ""}</span><span>${streakRight >= 3 ? `🔥 ${streakRight} in a row · ` : ""}${queue.length} left</span></div>
@@ -753,8 +806,11 @@ function runSession(el, queue, { label = "", practice = false } = {}) {
     $("#reveal").remove();
     $("#attempt").readOnly = true;
     const explain = Math.random() < 0.2 ? `<p class="small muted">💭 <b>Explain why:</b> before rating, say why this is true or link it to another topic (self-explanation).</p>` : "";
-    const badge = chk ? `<div class="verdict ${chk.verdict}">${chk.verdict === "right" ? "✓ Looks right" : chk.verdict === "partly" ? "≈ Partly there" : "✗ Doesn't match the answer"} <span class="small">· ${chk.hit}/${chk.total} key words</span></div>` : "";
-    $("#answer").innerHTML = `${badge}<div class="back flip-in">${esc(c.b)}</div>${explain}
+    const badge = chk ? `<div class="verdict ${chk.verdict}">${chk.verdict === "right" ? "✓ Looks right" : chk.verdict === "partly" ? "≈ Partly there" : "✗ Doesn't match the answer"} <span class="small">· ${chk.points ? `${chk.got}/${chk.of} points covered` : `${chk.hit}/${chk.total} key words`}</span></div>` : "";
+    const back = chk && chk.points
+      ? `<ul class="back flip-in points">${chk.points.map((x) => `<li class="${x.got === null ? "" : x.got ? "pt-got" : "pt-miss"}">${x.got === null ? "" : x.got ? "<b>✓</b> " : "<b>○</b> "}${esc(x.text)}${x.got === false ? ' <span class="small">missing</span>' : ""}</li>`).join("")}</ul>`
+      : `<div class="back flip-in">${esc(c.b)}</div>`;
+    $("#answer").innerHTML = `${badge}${back}${explain}
       <p class="small muted" style="margin:.2rem 0 .4rem">${chk ? "The check only compares key words, so you have the final say. " : ""}Were you right? Be honest. That decides when you'll see it again.</p>
       <div class="row"><button class="again" data-r="1">✗ 1 · Wrong</button><button class="hard" data-r="2">2 · Hard</button><button class="good" data-r="3">✓ 3 · Right</button><button class="easy" data-r="4">4 · Easy</button></div>`;
     if (chk) { const sug = { right: 3, partly: 2, wrong: 1 }[chk.verdict]; el.querySelector(`[data-r="${sug}"]`).classList.add("suggest"); }
@@ -778,6 +834,7 @@ function runSession(el, queue, { label = "", practice = false } = {}) {
     const ok = rating > 1;
     S.calib[conf].n++; if (ok) S.calib[conf].ok++;
     if (!practice) { schedule(c, rating); if (wasNew && rating > 1) logToday("new"); }
+    if (!firstSeen.has(c.id)) { firstSeen.add(c.id); tally[rating === 1 ? "wrong" : rating === 2 ? "hard" : "right"]++; }
     logToday("reviews"); done++; if (ok) { correct++; streakRight++; } else { streakRight = 0; missed.push(c); }
     if (!ok) queue.splice(Math.min(queue.length, 3), 0, c); // see it again soon this session
     save();
